@@ -446,6 +446,89 @@ def render_card_text(card: Dict[str, Any], orientation: str, tone: str) -> str:
     return _clip("\n\n".join(result_parts))
 
 
+def render_meaning_both_sides(card: Dict[str, Any], tone: str) -> str:
+    """
+    Special formatter for /meaning command - shows both orientations beautifully
+    with shared content (like mantras) only once at the end
+    """
+    tone = normalize_tone(tone)
+    
+    # Get card guidance (shared between both orientations)
+    dg = card.get("direct_guidance", {}) or {}
+    mantra = dg.get("mantra", "").strip()
+    action = card.get("call_to_action", "").strip()
+    
+    # Helper to get clean core meaning only (no mantras/actions)
+    def get_core_meaning(orientation: str) -> str:
+        is_rev = orientation.lower().startswith("r")
+        okey = "reversed" if is_rev else "upright"
+        
+        odata_raw = card.get(okey, {})
+        if isinstance(odata_raw, dict):
+            odata = odata_raw
+        elif isinstance(odata_raw, str):
+            odata = {"meaning": odata_raw}
+        else:
+            odata = {}
+        
+        # Get just the core narrative meaning
+        meaning = (odata.get("meaning") or "—")
+        if not isinstance(meaning, str):
+            meaning = str(meaning)
+        
+        # Get reader voice if available
+        voice_text = ""
+        voice = odata.get("voice", {})
+        if isinstance(voice, dict):
+            lead = voice.get("lead_in", "").strip()
+            pulse = voice.get("pulse", "").strip()
+            if lead or pulse:
+                voice_text = f"*{lead}*\n\n" if lead else ""
+                voice_text += f"*{pulse}*" if pulse else ""
+        
+        # Get specific guidance for this orientation
+        reader_voice = dg.get("reader_voice", "").strip()
+        tell = dg.get("tell", "").strip()
+        
+        parts = []
+        if voice_text:
+            parts.append(voice_text)
+        if meaning:
+            parts.append(meaning)
+        if reader_voice:
+            parts.append(f"*{reader_voice}*")
+        if tell:
+            parts.append(tell)
+        
+        return "\n\n".join(parts) if parts else "—"
+    
+    # Build upright and reversed sections
+    upright = get_core_meaning("Upright")
+    reversed = get_core_meaning("Reversed")
+    
+    # Build the combined output with shared wisdom at bottom
+    result_parts = []
+    
+    # Upright section
+    result_parts.append(f"**☀️ Upright**\n{upright}")
+    
+    # Reversed section
+    result_parts.append(f"**🌙 Reversed**\n{reversed}")
+    
+    # Shared universal wisdom at the end
+    shared = []
+    if mantra:
+        shared.append(f"✧ *{mantra}*")
+    if action:
+        shared.append(f"**Take action:** {action}")
+    
+    if shared:
+        result_parts.append(DIVIDERS["thin"])
+        result_parts.append("\n".join(shared))
+    
+    return _clip("\n\n".join(result_parts))
+
+
 # ==============================
 # USER SETTINGS + HISTORY (DB-backed)
 # ==============================
@@ -1734,18 +1817,13 @@ async def meaning_slash(interaction: discord.Interaction, card: str):
         settings=settings,
     )
 
-    # Build ONE embed (single embed + image, like cardoftheday)
+    # Build clean embed with both orientations
     embed = discord.Embed(
-        title=f"{E['book']} {chosen_name or '(unknown)'} • {tone_label(tone)}",
-        description="",
+        title=f"◇ {chosen_name} ◇",
+        description=render_meaning_both_sides(chosen, tone),
         color=color,
     )
-
-    upright_text = clip_field(render_card_text(chosen, "Upright", tone), 1024)
-    reversed_text = clip_field(render_card_text(chosen, "Reversed", tone), 1024)
-
-    embed.add_field(name=f"Upright {E['sun']} • {tone}", value=upright_text or "—", inline=False)
-    embed.add_field(name=f"Reversed {E['moon']} • {tone}", value=reversed_text or "—", inline=False)
+    
     embed.set_footer(text=get_footer("single"))
 
     # --- Image: same attachment style as cardoftheday ---
