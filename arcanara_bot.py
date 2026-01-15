@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+import sys
+print("=" * 50, file=sys.stderr, flush=True)
+print("DEBUG: Bot file is starting!", file=sys.stderr, flush=True)
+print("=" * 50, file=sys.stderr, flush=True)
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
@@ -2569,3 +2573,4 @@ async def settings_slash(
 # RUN BOT
 # ==============================
 bot.run(BOT_TOKEN)
+
