@@ -17,8 +17,16 @@ from psycopg.types.json import Json
 from psycopg.rows import dict_row
 from typing import Dict, Any, List, Optional
 from card_images import make_image_attachment  # uses assets/cards/rws_stx/ etc.
-import topgg
-print("✅ Arcanara boot: VERSION 2025-12-21-TopGG-1")
+
+# Optional top.gg integration
+try:
+    import topgg
+    TOPGG_AVAILABLE = True
+except ImportError:
+    TOPGG_AVAILABLE = False
+    print("⚠️ topgg not installed - stats posting disabled")
+
+print("✅ Arcanara boot: VERSION 2025-12-21-TopGG-2")
 
 MYSTERY_STATE: Dict[int, Dict[str, Any]] = {}
 
@@ -1090,7 +1098,7 @@ async def send_ephemeral(
 @tasks.loop(minutes=30)
 async def post_topgg_stats():
     """Post server and user count to top.gg every 30 minutes"""
-    if not TOPGG_TOKEN:
+    if not TOPGG_AVAILABLE or not TOPGG_TOKEN:
         return
     
     try:
@@ -1122,7 +1130,7 @@ async def on_ready():
         print(f"⚠️ Slash sync failed: {type(e).__name__}: {e}")
 
     # Start top.gg stats posting
-    if TOPGG_TOKEN and not post_topgg_stats.is_running():
+    if TOPGG_AVAILABLE and TOPGG_TOKEN and not post_topgg_stats.is_running():
         post_topgg_stats.start()
         print("✅ top.gg stats task started.")
         # Post immediately on startup
@@ -1135,6 +1143,8 @@ async def on_ready():
             print(f"✅ Initial post to top.gg: {len(bot.guilds)} servers")
         except Exception as e:
             print(f"⚠️ top.gg initial post failed: {type(e).__name__}: {e}")
+    elif not TOPGG_AVAILABLE:
+        print("⚠️ topgg library not installed - stats will not be posted.")
     elif not TOPGG_TOKEN:
         print("⚠️ TOPGG_TOKEN not set - stats will not be posted.")
 
