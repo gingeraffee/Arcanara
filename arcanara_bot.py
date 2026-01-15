@@ -18,16 +18,12 @@ from psycopg.rows import dict_row
 from typing import Dict, Any, List, Optional
 import asyncio  # For reading ceremonies
 from card_images import make_image_attachment  # uses assets/cards/rws_stx/ etc.
+import aiohttp  # For top.gg API calls
 
-# Optional top.gg integration
-try:
-    import topgg
-    TOPGG_AVAILABLE = True
-except ImportError:
-    TOPGG_AVAILABLE = False
-    print("⚠️ topgg not installed - stats posting disabled")
+# Top.gg will use direct HTTP API instead of a library
+TOPGG_AVAILABLE = True
 
-print("✅ Arcanara boot: VERSION 2025-12-21-TopGG-2")
+print("✅ Arcanara boot: VERSION 2025-01-15-TopGG-HTTP")
 
 MYSTERY_STATE: Dict[int, Dict[str, Any]] = {}
 
@@ -1637,17 +1633,27 @@ async def send_ephemeral(
 # ==============================
 @tasks.loop(minutes=30)
 async def post_topgg_stats():
-    """Post server and user count to top.gg every 30 minutes"""
-    if not TOPGG_AVAILABLE or not TOPGG_TOKEN:
+    """Post server count to top.gg every 30 minutes using HTTP API"""
+    if not TOPGG_TOKEN:
         return
     
     try:
-        topgg_client = topgg.DBLClient(bot, TOPGG_TOKEN, autopost=False)
-        await topgg_client.post_guild_count(
-            guild_count=len(bot.guilds),
-            shard_count=bot.shard_count or 1
-        )
-        print(f"✅ Posted to top.gg: {len(bot.guilds)} servers")
+        server_count = len(bot.guilds)
+        url = f"https://top.gg/api/bots/{bot.user.id}/stats"
+        headers = {
+            "Authorization": TOPGG_TOKEN,
+            "Content-Type": "application/json"
+        }
+        data = {
+            "server_count": server_count
+        }
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=data, headers=headers) as resp:
+                if resp.status == 200:
+                    print(f"✅ Posted to top.gg: {server_count} servers")
+                else:
+                    print(f"⚠️ top.gg returned status {resp.status}: {await resp.text()}")
     except Exception as e:
         print(f"⚠️ top.gg post failed: {type(e).__name__}: {e}")
 
@@ -1670,21 +1676,29 @@ async def on_ready():
         print(f"⚠️ Slash sync failed: {type(e).__name__}: {e}")
 
     # Start top.gg stats posting
-    if TOPGG_AVAILABLE and TOPGG_TOKEN and not post_topgg_stats.is_running():
+    if TOPGG_TOKEN and not post_topgg_stats.is_running():
         post_topgg_stats.start()
         print("✅ top.gg stats task started.")
         # Post immediately on startup
         try:
-            topgg_client = topgg.DBLClient(bot, TOPGG_TOKEN, autopost=False)
-            await topgg_client.post_guild_count(
-                guild_count=len(bot.guilds),
-                shard_count=bot.shard_count or 1
-            )
-            print(f"✅ Initial post to top.gg: {len(bot.guilds)} servers")
+            server_count = len(bot.guilds)
+            url = f"https://top.gg/api/bots/{bot.user.id}/stats"
+            headers = {
+                "Authorization": TOPGG_TOKEN,
+                "Content-Type": "application/json"
+            }
+            data = {
+                "server_count": server_count
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=data, headers=headers) as resp:
+                    if resp.status == 200:
+                        print(f"✅ Initial post to top.gg: {server_count} servers")
+                    else:
+                        print(f"⚠️ top.gg initial post status {resp.status}")
         except Exception as e:
             print(f"⚠️ top.gg initial post failed: {type(e).__name__}: {e}")
-    elif not TOPGG_AVAILABLE:
-        print("⚠️ topgg library not installed - stats will not be posted.")
     elif not TOPGG_TOKEN:
         print("⚠️ TOPGG_TOKEN not set - stats will not be posted.")
 
