@@ -1,8 +1,5 @@
 # -*- coding: utf-8 -*-
 import sys
-print("=" * 50, file=sys.stderr, flush=True)
-print("DEBUG: Bot file is starting!", file=sys.stderr, flush=True)
-print("=" * 50, file=sys.stderr, flush=True)
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
@@ -27,7 +24,7 @@ import aiohttp  # For top.gg API calls
 # Top.gg will use direct HTTP API instead of a library
 TOPGG_AVAILABLE = True
 
-print("✅ Arcanara boot: VERSION 2025-01-15-TopGG-HTTP")
+print("✅ Arcanara boot: VERSION 2025-01-15-TopGG-HTTP", file=sys.stderr, flush=True)
 
 MYSTERY_STATE: Dict[int, Dict[str, Any]] = {}
 
@@ -1668,21 +1665,21 @@ async def on_ready():
         try:
             ensure_tables()
             _DB_READY = True
-            print("✅ DB ready.")
+            print("✅ DB ready.", file=sys.stderr, flush=True)
         except Exception as e:
             print(f"❌ DB init failed: {type(e).__name__}: {e}")
             return
 
     try:
         await bot.tree.sync()
-        print("✅ Slash commands synced.")
+        print("✅ Slash commands synced.", file=sys.stderr, flush=True)
     except Exception as e:
         print(f"⚠️ Slash sync failed: {type(e).__name__}: {e}")
 
     # Start top.gg stats posting
     if TOPGG_TOKEN and not post_topgg_stats.is_running():
         post_topgg_stats.start()
-        print("✅ top.gg stats task started.")
+        print("✅ top.gg stats task started.", file=sys.stderr, flush=True)
         # Post immediately on startup
         try:
             server_count = len(bot.guilds)
@@ -1698,7 +1695,7 @@ async def on_ready():
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=data, headers=headers) as resp:
                     if resp.status == 200:
-                        print(f"✅ Initial post to top.gg: {server_count} servers")
+                        print(f"✅ Initial post to top.gg: {server_count} servers", file=sys.stderr, flush=True)
                     else:
                         print(f"⚠️ top.gg initial post status {resp.status}")
         except Exception as e:
@@ -1706,7 +1703,7 @@ async def on_ready():
     elif not TOPGG_TOKEN:
         print("⚠️ TOPGG_TOKEN not set - stats will not be posted.")
 
-    print(f"{E['crystal']} Arcanara is awake and shimmering as {bot.user}")
+    print(f"🔮 Arcanara is awake and shimmering as {bot.user}", file=sys.stderr, flush=True)
 
 
 @bot.tree.error
@@ -2573,4 +2570,3 @@ async def settings_slash(
 # RUN BOT
 # ==============================
 bot.run(BOT_TOKEN)
-
