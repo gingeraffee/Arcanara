@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 from psycopg.types.json import Json
 from psycopg.rows import dict_row
 from typing import Dict, Any, List, Optional
+import asyncio  # For reading ceremonies
 from card_images import make_image_attachment  # uses assets/cards/rws_stx/ etc.
 
 # Optional top.gg integration
@@ -921,6 +922,71 @@ DIVIDERS = {
 }
 
 # ==============================
+# READING CEREMONY MESSAGES
+# ==============================
+CEREMONY_MESSAGES = {
+    "shuffle": [
+        "Shuffling the deck... ✧",
+        "The cards settle into new order...",
+        "⋆｡˚ Clearing the energy... ⋆｡˚",
+        "Reshuffling... breathe...",
+    ],
+    "daily_draw": [
+        "⋆｡˚ Drawing your daily card...",
+        "One card steps forward for today...",
+        "Pulling your companion for the day...",
+        "The deck offers its morning message...",
+    ],
+    "single_draw": [
+        "⋆｡˚ Drawing a card...",
+        "One card rises to meet your question...",
+        "Pulling from the deck...",
+        "A card emerges...",
+    ],
+    "spread_layout": [
+        "Laying out the spread... card by card...",
+        "⋆｡˚ The pattern forms... ⋆｡˚",
+        "Drawing the cards... one at a time...",
+        "Arranging the spread before you...",
+    ],
+    "celtic_layout": [
+        "Laying out the Celtic Cross... this will take a moment...",
+        "⋆｡˚ Ten cards... unfolding the pattern... ⋆｡˚",
+        "The full spread emerges... breathe as it forms...",
+        "Card by card, the Celtic Cross reveals itself...",
+    ],
+    "mystery_draw": [
+        "⋆｡˚ Drawing a mystery card...",
+        "One card, face down... what do you sense?",
+        "A card waits in shadow...",
+        "Pulling a card... the image remains hidden...",
+    ],
+}
+
+async def show_ceremony(interaction: discord.Interaction, ceremony_type: str = "shuffle", pause_seconds: float = 1.8):
+    """
+    Display a ceremony message with a pause before the actual reading.
+    Creates anticipation and ritual feeling.
+    """
+    messages = CEREMONY_MESSAGES.get(ceremony_type, CEREMONY_MESSAGES["shuffle"])
+    message = random.choice(messages)
+    
+    try:
+        # Send the ceremony message
+        if not interaction.response.is_done():
+            await interaction.response.send_message(message, ephemeral=True)
+        else:
+            await interaction.followup.send(message, ephemeral=True)
+        
+        # Pause for the ceremony moment
+        await asyncio.sleep(pause_seconds)
+        
+    except Exception as e:
+        # If ceremony fails, just continue silently
+        print(f"⚠️ Ceremony display failed: {e}")
+        pass
+
+# ==============================
 # PREMIUM FOOTER MESSAGES
 # ==============================
 FOOTER_MESSAGES = {
@@ -1481,11 +1547,17 @@ async def history_slash(interaction: discord.Interaction, limit: Optional[int] =
 
 @bot.tree.command(name="cardoftheday", description="Reveal the card that guides your day.")
 async def cardoftheday_slash(interaction: discord.Interaction):
-    if not await safe_defer(interaction, ephemeral=True):
-        return
-
     day = _today_local_date()
     row = get_daily_card_row(interaction.user.id, day)
+
+    # If drawing a new card today, show ceremony
+    if not row:
+        await show_ceremony(interaction, "daily_draw", pause_seconds=2.0)
+        # Defer happens inside show_ceremony via followup
+    else:
+        # Card already drawn, just defer normally
+        if not await safe_defer(interaction, ephemeral=True):
+            return
 
     if row:
         orientation = row["orientation"]
@@ -1554,8 +1626,8 @@ async def cardoftheday_slash(interaction: discord.Interaction):
 @bot.tree.command(name="read", description="Three-card reading: Situation • Obstacle • Guidance.")
 @app_commands.describe(intention="Your question or intention (example: my career path)")
 async def read_slash(interaction: discord.Interaction, intention: str):
-    if not await safe_defer(interaction, ephemeral=True):
-        return
+    # Show ceremony first
+    await show_ceremony(interaction, "spread_layout", pause_seconds=2.0)
 
     user_intentions[interaction.user.id] = intention
     tone = get_effective_tone(interaction.user.id)
@@ -1598,8 +1670,8 @@ async def read_slash(interaction: discord.Interaction, intention: str):
 
 @bot.tree.command(name="threecard", description="Past • Present • Future spread.")
 async def threecard_slash(interaction: discord.Interaction):
-    if not await safe_defer(interaction, ephemeral=True):
-        return
+    # Show ceremony
+    await show_ceremony(interaction, "spread_layout", pause_seconds=2.0)
 
     positions = ["Past", "Present", "Future"]
     cards = draw_unique_cards(3)
@@ -1646,8 +1718,8 @@ async def threecard_slash(interaction: discord.Interaction):
 @bot.tree.command(name="celtic", description="Full 10-card Celtic Cross spread.")
 @app_commands.checks.cooldown(1, 120.0)
 async def celtic_slash(interaction: discord.Interaction):
-    if not await safe_defer(interaction, ephemeral=True):
-        return
+    # Longer ceremony for the big spread
+    await show_ceremony(interaction, "celtic_layout", pause_seconds=2.5)
 
     positions = [
         "Present Situation", "Challenge", "Root Cause", "Past", "Conscious Goal",
@@ -1839,8 +1911,8 @@ async def meaning_slash(interaction: discord.Interaction, card: str):
 
 @bot.tree.command(name="clarify", description="Draw a clarifier card for your current intention.")
 async def clarify_slash(interaction: discord.Interaction):
-    if not await safe_defer(interaction, ephemeral=True):
-        return
+    # Clarify ceremony
+    await show_ceremony(interaction, "single_draw", pause_seconds=1.5)
 
     card, orientation = draw_card()
     tone_emoji = E["sun"] if orientation == "Upright" else E["moon"]
@@ -1890,8 +1962,8 @@ async def intent_slash(interaction: discord.Interaction, intention: Optional[str
 
 @bot.tree.command(name="mystery", description="Pull a mystery card (image only). Use /reveal to see the meaning.")
 async def mystery_slash(interaction: discord.Interaction):
-    if not await safe_defer(interaction, ephemeral=True):
-        return
+    # Special mystery ceremony
+    await show_ceremony(interaction, "mystery_draw", pause_seconds=2.0)
 
     card = random.choice(tarot_cards)
     is_reversed = random.random() < 0.5
