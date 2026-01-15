@@ -777,14 +777,105 @@ def clip_field(text: str, limit: int = 1024) -> str:
     return text[: limit - 1] + "…"
 
 
+# ==============================
+# PREMIUM COLOR PALETTE - Mystical Evening
+# ==============================
+# Philosophy: Colors evoke candlelight, velvet, old books, and sacred spaces
+# Think: intimate tarot reading in a dim room with warm lighting
+
+PREMIUM_COLORS = {
+    # Suits - each tells an elemental story
+    "Wands": 0xC84B31,        # Deep ember (fire, passion, creative spark)
+    "Cups": 0x2C5F8D,         # Deep water blue (emotion, intuition, depth)
+    "Swords": 0x5D6D7E,       # Storm gray (intellect, clarity through clouds)
+    "Pentacles": 0x3D5A3D,    # Forest green (earth, abundance, grounding)
+    "Major Arcana": 0x6B4E71, # Deep amethyst (spiritual, mysterious, regal)
+    
+    # Special reading types
+    "Daily": 0x8B6F47,        # Antique gold (sacred morning ritual)
+    "Mystery": 0x2D2D3A,      # Almost black (the unknown)
+    "Celtic": 0x4A3145,       # Deep plum (complex readings)
+    "Clarify": 0x7E6B8F,      # Soft purple (gentle guidance)
+    "ThreeCard": 0x5B4E6C,    # Dusky purple (past-present-future)
+    
+    # UI/System
+    "Welcome": 0x5B4E6C,      # Dusky purple (greeting)
+    "Settings": 0x4A5568,     # Slate (neutral but warm)
+    "Error": 0x8B4545,        # Deep burgundy (not harsh red)
+    "General": 0x6B5B7E,      # Soft twilight purple
+}
+
 def suit_color(suit):
-    return {
-        "Wands": 0xE25822,
-        "Cups": 0x0077BE,
-        "Swords": 0xB0B0B0,
-        "Pentacles": 0x2E8B57,
-        "Major Arcana": 0xA020F0,
-    }.get(suit, 0x9370DB)
+    """Get premium color for a suit"""
+    return PREMIUM_COLORS.get(suit, PREMIUM_COLORS["General"])
+
+
+# ==============================
+# MYSTICAL DIVIDERS & DECORATIONS
+# ==============================
+DIVIDERS = {
+    "thin": "· · · · ·",
+    "medium": "━━━━━━━",
+    "ornate": "✧ · · · ✧",
+    "mystical": "⋆｡˚ ☁︎ ˚｡⋆",
+    "dots": "◦ ◦ ◦",
+}
+
+# ==============================
+# PREMIUM FOOTER MESSAGES
+# ==============================
+FOOTER_MESSAGES = {
+    "daily": [
+        "Carry this energy softly through your day.",
+        "A gentle companion for the hours ahead.",
+        "Today's thread has been woven — walk mindfully.",
+        "Let this card whisper its wisdom as the day unfolds.",
+        "One message, offered with care. The rest is yours to write.",
+    ],
+    "deep_reading": [
+        "Trust your inner knowing as you integrate this wisdom.",
+        "The cards reflect, but you hold the compass.",
+        "Let this settle into your awareness at its own pace.",
+        "Sit with what resonates. Release what doesn't.",
+        "A map is not the journey — you still choose the path.",
+    ],
+    "single": [
+        "One card, infinite interpretations — what resonates?",
+        "The mirror has shown its image — what do you see?",
+        "Take what serves, leave what doesn't.",
+        "A single spark can light the way forward.",
+        "Sometimes one card is all you need to hear.",
+    ],
+    "mystery": [
+        "The veil lifts only when you're ready.",
+        "Sometimes not knowing is part of the medicine.",
+        "Trust what you felt before the reveal.",
+        "Your intuition spoke first — remember what it said.",
+    ],
+    "spread": [
+        "Each card speaks to the others — notice the threads.",
+        "The full story lives between the cards, not just in them.",
+        "Trust the pattern that emerges.",
+        "Let the larger picture form at its own pace.",
+    ],
+    "clarify": [
+        "A smaller light to illuminate what was unclear.",
+        "Sometimes we need to look twice to truly see.",
+        "This card offers a softer angle on the same truth.",
+        "The clarification arrives — hold both perspectives.",
+    ],
+    "general": [
+        "A tarot reading is a mirror, not a cage. You steer.",
+        "The cards offer reflection — your wisdom makes meaning.",
+        "Listen with your intuition, not just your mind.",
+        "What the cards reveal, you already knew somewhere deep.",
+    ],
+}
+
+def get_footer(reading_type: str = "general") -> str:
+    """Get a random premium footer message for the reading type"""
+    messages = FOOTER_MESSAGES.get(reading_type, FOOTER_MESSAGES["general"])
+    return random.choice(messages)
 
 
 def suit_emoji(suit):
@@ -994,26 +1085,60 @@ in_character_lines = {
         "The deck hums with fresh energy once more.",
         "All is reset. The cards breathe again.",
         "Order dissolves into possibility — the deck is ready.",
+        "Slate wiped clean. The cards await your next question.",
+        "A fresh shuffle, a fresh start. What wants to be known?",
     ],
     "daily": [
         "Here is the energy that threads through your day...",
         "This card has stepped forward to guide you.",
         "Its message hums softly — take it with you into the light.",
+        "The dawn pulls a single card forward — your companion for today.",
+        "One card steps into the light. This is what asks for your attention.",
+        "Before the day unfolds, a message arrives...",
+    ],
+    "daily_repeat": [
+        "The same card returns — its message isn't finished with you yet.",
+        "This energy persists. Perhaps today you'll hear it differently.",
+        "Again, this one. There's something here you need to sit with longer.",
     ],
     "spread": [
         "The weave of time unfolds — past, present, and future speak.",
         "Let us see how the threads intertwine for your path.",
         "Each card now reveals its whisper in the larger story.",
+        "Three cards fall into place. Each one speaks to the others.",
+        "The timeline spreads before you — what patterns do you see?",
     ],
     "deep": [
         "This spread carries depth — breathe as you read its symbols.",
         "A more ancient current flows beneath these cards.",
         "The deck speaks slowly now; listen beyond the words.",
+        "Ten cards. A full constellation. This will take time — breathe.",
+        "We're about to unfold something layered. Make space for complexity.",
+        "The Celtic Cross reveals itself — trust the larger pattern.",
+    ],
+    "question": [
+        "You've brought a question with weight. Let's see what wants to speak.",
+        "The deck quiets when honest questions arrive. Here is what surfaces...",
+        "I feel the gravity of your question. The cards are listening.",
+        "Your question hangs in the air. A single card rises to meet it.",
+    ],
+    "mystery": [
+        "Close your eyes... what does this card want you to feel first?",
+        "Face down, waiting. What's your intuition saying?",
+        "The card rests in shadow. What do you sense before the light?",
+        "Sometimes we need to sit with the unknown before the reveal.",
+    ],
+    "clarify": [
+        "A second card steps forward — let's see what it illuminates.",
+        "You asked for clarity. Here is another angle on the same truth.",
+        "The clarifier arrives — notice what shifts in your understanding.",
     ],
     "general": [
         "The veil lifts and a message takes shape...",
         "Listen closely — the cards are patient but precise.",
         "A single spark of insight is about to emerge...",
+        "The cards have something to say. Are you ready to hear it?",
+        "Stillness first, then the message reveals itself.",
     ],
 }
 
@@ -1194,7 +1319,7 @@ async def shuffle_slash(interaction: discord.Interaction):
             f"• **Tone**: reset to **{DEFAULT_TONE}**\n\n"
             "Set a fresh intention with `/intent`, then draw with `/cardoftheday` or `/read`."
         ),
-        color=0x9370DB
+        color=PREMIUM_COLORS["General"]
     )
 
     await send_ephemeral(interaction, embeds=[embed], mood="shuffle")
@@ -1249,7 +1374,7 @@ async def history_slash(interaction: discord.Interaction, limit: Optional[int] =
     embed = discord.Embed(
         title=f"{E['book']} Your Recent Readings",
         description=text,
-        color=0x6A5ACD,
+        color=PREMIUM_COLORS["Settings"],
     )
     embed.set_footer(text="History is opt-in • Use /forgetme to delete stored data.")
 
@@ -1313,13 +1438,15 @@ async def cardoftheday_slash(interaction: discord.Interaction):
     )
 
     embed = discord.Embed(
-        title=f"{E['crystal']} Card of the Day",
+        title=f"✧ Your Daily Card ✧",
         description=desc,
-        color=suit_color(card["suit"]),
+        color=PREMIUM_COLORS["Daily"],
     )
 
     if attach_url:
         embed.set_image(url=attach_url)
+    
+    embed.set_footer(text=get_footer("daily"))
 
     await send_ephemeral(interaction, embed=embed, mood="daily", file_obj=file_obj)
 
@@ -1351,9 +1478,9 @@ async def read_slash(interaction: discord.Interaction, intention: str):
     )
 
     embed = discord.Embed(
-        title=f"{E['crystal']} Intuitive Reading {E['crystal']}",
-        description=f"{E['light']} **Intention:** *{intention}*\n\n**How I’ll read this:** {tone_label(tone)}",
-        color=0x9370DB,
+        title=f"◇ Intuitive Reading ◇",
+        description=f"✧ **Intention:** *{intention}*\n\n**How I’ll read this:** {tone_label(tone)}",
+        color=PREMIUM_COLORS["General"],
     )
 
     pretty_positions = [f"Situation {E['sun']}", f"Obstacle {E['sword']}", f"Guidance {E['star']}"]
@@ -1365,8 +1492,8 @@ async def read_slash(interaction: discord.Interaction, intention: str):
             inline=False,
         )
 
-    embed.set_footer(text=f"{E['spark']} Let these cards guide your awareness, not dictate your choices.")
-    await send_ephemeral(interaction, embed=embed, mood="spread")
+    embed.set_footer(text=get_footer("spread"))
+    await send_ephemeral(interaction, embed=embed, mood="question")
 
 
 @bot.tree.command(name="threecard", description="Past • Present • Future spread.")
@@ -1402,7 +1529,7 @@ async def threecard_slash(interaction: discord.Interaction):
     embed = discord.Embed(
         title=f"{E['crystal']} Three-Card Spread",
         description=desc,
-        color=0xA020F0,
+        color=PREMIUM_COLORS["ThreeCard"],
     )
 
     pretty_positions = [f"Past {E['clock']}", f"Present {E['moon']}", f"Future {E['star']}"]
@@ -1446,7 +1573,7 @@ async def celtic_slash(interaction: discord.Interaction):
     embed = discord.Embed(
         title=f"{E['crystal']} Celtic Cross Spread {E['crystal']}",
         description=f"A deep, archetypal exploration of your path.\n\n**How I’ll read this:** {tone_label(tone)}",
-        color=0xA020F0,
+        color=PREMIUM_COLORS["Celtic"],
     )
     total_length = len(embed.title) + len(embed.description)
 
@@ -1466,7 +1593,7 @@ async def celtic_slash(interaction: discord.Interaction):
             embed = discord.Embed(
                 title=f"{E['crystal']} Celtic Cross (Continued)",
                 description=f"**How I’ll read this:** {tone_label(tone)}",
-                color=0xA020F0,
+                color=PREMIUM_COLORS["Celtic"],
             )
             total_length = len(embed.title) + len(embed.description)
 
@@ -1602,7 +1729,7 @@ async def meaning_slash(interaction: discord.Interaction, card: str):
 
     embed.add_field(name=f"Upright {E['sun']} • {tone}", value=upright_text or "—", inline=False)
     embed.add_field(name=f"Reversed {E['moon']} • {tone}", value=reversed_text or "—", inline=False)
-    embed.set_footer(text=f"{E['light']} Interpreting symbols through Arcanara • Tarot Bot")
+    embed.set_footer(text=get_footer("single"))
 
     # --- Image: same attachment style as cardoftheday ---
     file_obj, attach_url = make_image_attachment(chosen_name, False)
@@ -1646,7 +1773,7 @@ async def clarify_slash(interaction: discord.Interaction):
         description=desc,
         color=suit_color(card["suit"]),
     )
-    embed.set_footer(text=f"{E['spark']} A clarifier shines a smaller light within your larger spread.")
+    embed.set_footer(text=get_footer("clarify"))
     await send_ephemeral(interaction, embed=embed, mood="general")
 
 @bot.tree.command(name="intent", description="Set (or view) your current intention.")
@@ -1774,7 +1901,7 @@ async def reveal_slash(interaction: discord.Interaction):
             description=meaning,
             color=suit_color(card["suit"]),
         )
-        embed.set_footer(text=f"{E['light']} Interpreting symbols through Arcanara • Tarot Bot")
+        embed.set_footer(text=get_footer("mystery"))
 
         await send_ephemeral(interaction, embed=embed, mood="general")
 
@@ -1854,14 +1981,14 @@ async def insight_slash(interaction: discord.Interaction):
     embed = discord.Embed(
         title=f"{E['crystal']} Arcanara",
         description=f"*{opener}*\n\n{guided}",
-        color=0xB28DFF,
+        color=PREMIUM_COLORS["Welcome"],
     )
 
     embed.add_field(name="What I can do for you", value=chunks[0] if chunks else "—", inline=False)
     for i, part in enumerate(chunks[1:], start=2):
         embed.add_field(name=f"What I can do for you (cont. {i})", value=part, inline=False)
 
-    embed.set_footer(text="A tarot reading is a mirror, not a cage. You steer.")
+    embed.set_footer(text=get_footer("general"))
     await send_ephemeral(interaction, embed=embed, mood="general")
 
 
@@ -1877,7 +2004,7 @@ async def privacy_slash(interaction: discord.Interaction):
             "**Delete everything:** use `/forgetme`.\n"
             "Arcanara does not read server messages or DMs."
         ),
-        color=0x6A5ACD,
+        color=PREMIUM_COLORS["Settings"],
     )
     await send_ephemeral(interaction, embed=embed, mood="general")
 
