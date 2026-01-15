@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 import os
 import psycopg
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import traceback
 from zoneinfo import ZoneInfo
 from psycopg.types.json import Json
@@ -853,6 +853,256 @@ def set_daily_card_row(user_id: int, day, card_name: str, orientation: str) -> N
 def find_card_by_name(name: str) -> Optional[Dict[str, Any]]:
     return next((c for c in tarot_cards if c.get("name") == name), None)
 
+
+# ==============================
+# DAILY CARD STREAK TRACKING & TIME-AWARE GREETINGS
+# ==============================
+def get_daily_card_streak(user_id: int) -> int:
+    """
+    Calculate current streak of consecutive days user has drawn daily cards.
+    Returns number of consecutive days (including today if drawn).
+    """
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            # Get last 30 days of daily cards for this user
+            cur.execute(
+                """
+                SELECT day
+                FROM tarot_daily_card
+                WHERE user_id = %s
+                ORDER BY day DESC
+                LIMIT 30
+                """,
+                (user_id,)
+            )
+            rows = cur.fetchall()
+    
+    if not rows:
+        return 0
+    
+    # Check consecutive days backwards from today
+    today = _today_local_date()
+    streak = 0
+    expected_day = today
+    
+    for row in rows:
+        day = row["day"]
+        if day == expected_day:
+            streak += 1
+            expected_day = expected_day - timedelta(days=1)
+        else:
+            break
+    
+    return streak
+
+
+def get_time_of_day_greeting() -> str:
+    """Get a time-appropriate greeting based on current hour."""
+    now = datetime.now(ZoneInfo("America/Chicago"))  # Use central time as default
+    hour = now.hour
+    
+    if 5 <= hour < 12:
+        return random.choice([
+            "Good morning",
+            "Morning light arrives",
+            "As the day begins",
+            "Dawn breaks",
+        ])
+    elif 12 <= hour < 17:
+        return random.choice([
+            "Good afternoon",
+            "Midday pause",
+            "As the sun climbs high",
+            "In the afternoon glow",
+        ])
+    elif 17 <= hour < 21:
+        return random.choice([
+            "Good evening",
+            "As daylight fades",
+            "Evening arrives",
+            "Dusk settles in",
+        ])
+    else:
+        return random.choice([
+            "Under the night sky",
+            "In the quiet hours",
+            "As darkness holds space",
+            "Late night wisdom",
+        ])
+
+
+def get_mystical_timestamp() -> str:
+    """Get a mystical description of current time for footers."""
+    now = datetime.now(ZoneInfo("America/Chicago"))
+    hour = now.hour
+    
+    if 5 <= hour < 9:
+        return "drawn at dawn"
+    elif 9 <= hour < 12:
+        return "drawn in morning light"
+    elif 12 <= hour < 15:
+        return "drawn at midday"
+    elif 15 <= hour < 18:
+        return "drawn in afternoon glow"
+    elif 18 <= hour < 21:
+        return "drawn as daylight fades"
+    elif 21 <= hour < 24:
+        return "drawn under the evening sky"
+    else:
+        return "drawn in the quiet hours"
+
+
+# ==============================
+# POST-READING SUGGESTIONS (Smart Contextual Guidance)
+# ==============================
+def get_post_reading_suggestion(card_name: str, command: str = "cardoftheday") -> Optional[str]:
+    """
+    Analyze the reading and offer contextual suggestions.
+    Returns a suggestion message or None.
+    """
+    # Heavy/challenging cards that might benefit from clarification
+    HEAVY_CARDS = [
+        "The Tower", "Death", "The Devil", "Ten of Swords",
+        "Three of Swords", "Five of Pentacles", "Nine of Swords",
+        "The Hanged Man", "Five of Cups"
+    ]
+    
+    # Cards about choices/decisions
+    DECISION_CARDS = [
+        "The Lovers", "Two of Swords", "Seven of Cups",
+        "The Chariot", "Justice", "Temperance"
+    ]
+    
+    # Cards about new beginnings
+    NEW_BEGINNING_CARDS = [
+        "The Fool", "Ace of Wands", "Ace of Cups",
+        "Ace of Swords", "Ace of Pentacles", "The Magician"
+    ]
+    
+    # Cards about completion/endings
+    COMPLETION_CARDS = [
+        "The World", "Ten of Pentacles", "Ten of Cups",
+        "Ten of Wands", "Death", "The Tower"
+    ]
+    
+    # Generate suggestions based on card type
+    suggestions = []
+    
+    if card_name in HEAVY_CARDS:
+        suggestions.append("This one carries weight. **/clarify** can offer additional perspective.")
+        suggestions.append("Heavy energy here. Want to **/clarify** for more insight?")
+    
+    if card_name in DECISION_CARDS:
+        suggestions.append("Standing at a crossroads? **/threecard** can map the paths ahead.")
+        suggestions.append("For deeper clarity on this decision, try **/celtic** for the full picture.")
+    
+    if card_name in NEW_BEGINNING_CARDS:
+        suggestions.append("New beginnings ask for intention. Set yours with **/intent**.")
+        suggestions.append("Starting fresh? **/intent** helps you name what you're moving toward.")
+    
+    if card_name in COMPLETION_CARDS:
+        suggestions.append("Something's completing. **/threecard** can show what comes next.")
+    
+    # Return random suggestion if any apply
+    if suggestions:
+        return random.choice(suggestions)
+    
+    return None
+
+
+def analyze_recent_pattern(user_id: int) -> Optional[str]:
+    """
+    Analyze user's recent readings for patterns.
+    Returns a pattern observation message or None.
+    """
+    try:
+        settings = get_user_settings(user_id)
+        if not settings.get("history_opt_in", False):
+            return None
+        
+        with db_connect() as conn:
+            with conn.cursor() as cur:
+                # Get last 7 readings
+                cur.execute(
+                    """
+                    SELECT payload
+                    FROM tarot_reading_history
+                    WHERE user_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT 7
+                    """,
+                    (user_id,)
+                )
+                rows = cur.fetchall()
+        
+        if len(rows) < 5:
+            return None  # Not enough data
+        
+        # Extract cards from readings
+        cards = []
+        for row in rows:
+            payload = row.get("payload", {})
+            if isinstance(payload, dict):
+                # Single card readings
+                if "card" in payload:
+                    cards.append(payload["card"])
+                # Multi-card readings
+                elif "cards" in payload:
+                    for c in payload["cards"]:
+                        if isinstance(c, dict) and "name" in c:
+                            cards.append(c["name"])
+        
+        if len(cards) < 5:
+            return None
+        
+        # Analyze patterns
+        # Count suit frequency
+        suit_counts = {"Cups": 0, "Wands": 0, "Swords": 0, "Pentacles": 0, "Major": 0}
+        reversed_count = 0
+        
+        for card_info in cards:
+            card_name = card_info if isinstance(card_info, str) else card_info.get("name", "")
+            
+            # Find the card in deck
+            card_obj = next((c for c in tarot_cards if c.get("name") == card_name), None)
+            if card_obj:
+                suit = card_obj.get("suit", "")
+                if "Major" in suit:
+                    suit_counts["Major"] += 1
+                elif suit in suit_counts:
+                    suit_counts[suit] += 1
+            
+            # Count reversals
+            if isinstance(card_info, dict):
+                if card_info.get("orientation", "").lower().startswith("r"):
+                    reversed_count += 1
+        
+        # Generate pattern observations
+        total_cards = len(cards)
+        
+        # Suit dominance
+        max_suit = max(suit_counts, key=suit_counts.get)
+        if suit_counts[max_suit] >= total_cards * 0.4:  # 40%+ of one suit
+            messages = {
+                "Cups": "You're deep in emotional territory lately. Notice the pattern?",
+                "Wands": "Lots of fire energy this week. Creative sparks or conflicts?",
+                "Swords": "Mental overload? Your readings lean heavily toward Swords lately.",
+                "Pentacles": "Grounded in the material world this week. Pentacles dominate your draws.",
+                "Major": "Big archetypal energy. Major Arcana keeps appearing for you.",
+            }
+            return messages.get(max_suit)
+        
+        # High reversal rate
+        if reversed_count >= total_cards * 0.6:  # 60%+ reversed
+            return "Most of your cards lately pull reversed. What's asking to be integrated?"
+        
+    except Exception as e:
+        print(f"⚠️ Pattern analysis failed: {e}")
+        return None
+    
+    return None
+
+
 def draw_card():
     card = random.choice(tarot_cards)
     orientation = random.choice(["Upright", "Reversed"])
@@ -1549,13 +1799,27 @@ async def history_slash(interaction: discord.Interaction, limit: Optional[int] =
 async def cardoftheday_slash(interaction: discord.Interaction):
     day = _today_local_date()
     row = get_daily_card_row(interaction.user.id, day)
-
-    # If drawing a new card today, show ceremony
-    if not row:
-        await show_ceremony(interaction, "daily_draw", pause_seconds=2.0)
-        # Defer happens inside show_ceremony via followup
+    
+    is_first_draw_today = (row is None)
+    
+    # If drawing a new card today, show ceremony with time-aware greeting
+    if is_first_draw_today:
+        greeting = get_time_of_day_greeting()
+        ceremony_messages = [
+            f"{greeting}. Let's see what today asks of you...",
+            f"{greeting}. One card steps forward...",
+            f"{greeting}. The deck offers its guidance...",
+        ]
+        custom_message = random.choice(ceremony_messages)
+        
+        # Show custom ceremony message
+        try:
+            await interaction.response.send_message(custom_message, ephemeral=True)
+            await asyncio.sleep(2.0)
+        except Exception:
+            pass
     else:
-        # Card already drawn, just defer normally
+        # Card already drawn - return message
         if not await safe_defer(interaction, ephemeral=True):
             return
 
@@ -1563,7 +1827,6 @@ async def cardoftheday_slash(interaction: discord.Interaction):
         orientation = row["orientation"]
         card = find_card_by_name(row["card_name"])
         if card is None:
-            # If your deck JSON changed and the name doesn't match anymore, fall back gracefully
             card, orientation = draw_card()
             set_daily_card_row(interaction.user.id, day, card["name"], orientation)
     else:
@@ -1592,8 +1855,14 @@ async def cardoftheday_slash(interaction: discord.Interaction):
 
     # Premium clean header
     desc = f"**{card['name']}** {tone_emoji} *{orientation}*\n{DIVIDERS['dots']}\n\n{meaning}"
+    
+    # Add intention if set
     if intent_text:
         desc += f"\n\n✧ *Your intention: {intent_text}*"
+    
+    # If returning to check card again, add gentle reminder
+    if not is_first_draw_today:
+        desc = f"*Your card for today remains unchanged. The message holds...*\n\n{DIVIDERS['thin']}\n\n{desc}"
 
     log_history_if_opted_in(
         interaction.user.id,
@@ -1605,6 +1874,7 @@ async def cardoftheday_slash(interaction: discord.Interaction):
             "intention": intent_text,
             "images_enabled": bool(settings.get("images_enabled", True)),
             "day": str(day),
+            "is_first_draw": is_first_draw_today,
         },
         settings=settings,
     )
@@ -1618,9 +1888,48 @@ async def cardoftheday_slash(interaction: discord.Interaction):
     if attach_url:
         embed.set_image(url=attach_url)
     
-    embed.set_footer(text=get_footer("daily"))
+    # Calculate streak for footer
+    streak = get_daily_card_streak(interaction.user.id)
+    timestamp = get_mystical_timestamp()
+    
+    # Dynamic footer based on streak
+    if is_first_draw_today and streak >= 3:
+        footer_messages = [
+            f"{streak} days in a row. The ritual deepens.",
+            f"Day {streak} of your practice. Well done.",
+            f"{streak} days of consistency. The pattern holds.",
+        ]
+        footer = random.choice(footer_messages)
+    elif is_first_draw_today:
+        footer = f"{get_footer('daily')} • {timestamp}"
+    else:
+        footer = "The same card speaks again. What new meaning emerges?"
+    
+    embed.set_footer(text=footer)
 
     await send_ephemeral(interaction, embed=embed, mood="daily", file_obj=file_obj)
+    
+    # Post-reading suggestions (only for first draw, not returns)
+    if is_first_draw_today:
+        # Wait a moment before suggesting
+        await asyncio.sleep(1.5)
+        
+        # Check for card-specific suggestion
+        suggestion = get_post_reading_suggestion(card["name"], "cardoftheday")
+        
+        # Check for pattern observation
+        if not suggestion:
+            suggestion = analyze_recent_pattern(interaction.user.id)
+        
+        # Send suggestion if we have one
+        if suggestion:
+            try:
+                await interaction.followup.send(
+                    f"*{suggestion}*",
+                    ephemeral=True
+                )
+            except Exception:
+                pass  # Silently fail if suggestion can't be sent
 
 
 @bot.tree.command(name="read", description="Three-card reading: Situation • Obstacle • Guidance.")
@@ -1666,6 +1975,23 @@ async def read_slash(interaction: discord.Interaction, intention: str):
 
     embed.set_footer(text=get_footer("spread"))
     await send_ephemeral(interaction, embed=embed, mood="question")
+    
+    # Post-reading suggestion
+    await asyncio.sleep(1.5)
+    
+    # Check if any heavy cards appeared
+    card_names = [card["name"] for card, _ in cards]
+    suggestions = [get_post_reading_suggestion(name, "read") for name in card_names]
+    suggestions = [s for s in suggestions if s]
+    
+    if suggestions:
+        try:
+            await interaction.followup.send(
+                f"*{random.choice(suggestions)}*",
+                ephemeral=True
+            )
+        except Exception:
+            pass
 
 
 @bot.tree.command(name="threecard", description="Past • Present • Future spread.")
