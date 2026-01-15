@@ -269,13 +269,14 @@ def _get_orientation_data(card: dict, orientation: str) -> dict:
 
 
 def render_card_text(card: Dict[str, Any], orientation: str, tone: str) -> str:
+    """Premium formatted card text - clean, readable, and beautiful"""
     tone = normalize_tone(tone)
     spec = TONE_SPECS.get(tone, TONE_SPECS[DEFAULT_TONE])
 
     is_rev = orientation.strip().lower().startswith("r")
     okey = "reversed" if is_rev else "upright"
 
-    # ✅ NEW: normalize orientation data to a dict
+    # Normalize orientation data to a dict
     odata_raw = card.get(okey, {})
     if isinstance(odata_raw, dict):
         odata = odata_raw
@@ -286,11 +287,11 @@ def render_card_text(card: Dict[str, Any], orientation: str, tone: str) -> str:
     else:
         odata = {}
 
-    # ✅ NEW: meaning must be a string
+    # Meaning must be a string
     meaning = (odata.get("meaning") or "—")
     if not isinstance(meaning, str):
         meaning = str(meaning)
-    # ✅ OPTIONAL UPGRADE: new voice fields (safe, no behavior change unless used)
+    
     voice = odata.get("voice", {})
     if not isinstance(voice, dict):
         voice = {}
@@ -311,9 +312,12 @@ def render_card_text(card: Dict[str, Any], orientation: str, tone: str) -> str:
     def questions():
         qs = dg.get("questions", []) or []
         qs = [q for q in qs if isinstance(q, str) and q.strip()]
-        return "**Ask:** " + " | ".join(qs[:3]) if qs else ""
+        return "**Ask yourself:** " + " • ".join(qs[:3]) if qs else ""
 
+    # Collect blocks with premium formatting
     blocks = []
+    shared_items = []  # Items that are same for upright/reversed (like mantra)
+    
     for token in spec:
         if token == "meaning":
             blocks.append(meaning)
@@ -321,7 +325,7 @@ def render_card_text(card: Dict[str, Any], orientation: str, tone: str) -> str:
         elif token == "mantra":
             m = dg.get("mantra", "")
             if m:
-                blocks.append(f"**Mantra:** {m}")
+                shared_items.append(f"✧ *{m}*")
 
         elif token == "quick":
             q = dg.get("quick", "")
@@ -346,7 +350,7 @@ def render_card_text(card: Dict[str, Any], orientation: str, tone: str) -> str:
         elif token == "shadow":
             s = dg.get("shadow", "")
             if s:
-                blocks.append(f"**Shadow:** {s}")
+                blocks.append(f"**Shadow side:** {s}")
 
         elif token == "questions":
             qs = questions()
@@ -356,28 +360,28 @@ def render_card_text(card: Dict[str, Any], orientation: str, tone: str) -> str:
         elif token == "next_24h":
             n = dg.get("next_24h", "")
             if n:
-                blocks.append(f"**Next 24h:** {n}")
+                blocks.append(f"**Next 24 hours:** {n}")
 
         elif token == "relationships":
             txt = lenses.get("relationships") or dg.get("relationships", "")
             if txt:
-                blocks.append(f"**Love/People:** {txt}")
+                blocks.append(f"**In relationships:** {txt}")
 
         elif token == "work":
             txt = lenses.get("work") or dg.get("work", "")
             if txt:
-                blocks.append(f"**Work:** {txt}")
+                blocks.append(f"**At work:** {txt}")
 
         elif token == "money":
             txt = lenses.get("money") or dg.get("money", "")
             if txt:
-                blocks.append(f"**Money:** {txt}")
+                blocks.append(f"**With money:** {txt}")
 
-        # ---- v2 fields ----
+        # v2 fields
         elif token == "tell":
             t = dg.get("tell", "")
             if t:
-                blocks.append(f"**The truth:** {t}")
+                blocks.append(t)  # No label, this IS the message
 
         elif token == "prescription":
             p = dg.get("prescription", "")
@@ -395,9 +399,9 @@ def render_card_text(card: Dict[str, Any], orientation: str, tone: str) -> str:
             if gf or rf:
                 line = []
                 if gf:
-                    line.append(f"**Green flag:** {gf}")
+                    line.append(f"✓ {gf}")
                 if rf:
-                    line.append(f"**Red flag:** {rf}")
+                    line.append(f"✗ {rf}")
                 blocks.append("\n".join(line))
 
         elif token == "reader_voice":
@@ -427,7 +431,19 @@ def render_card_text(card: Dict[str, Any], orientation: str, tone: str) -> str:
             if a:
                 blocks.append(f"**Action:** {a}")
 
-    return _clip("\n\n".join(blocks))
+    # Assemble final text with premium spacing
+    result_parts = []
+    
+    # Main content
+    if blocks:
+        result_parts.append("\n\n".join(blocks))
+    
+    # Shared/universal items at the end (mantras, etc)
+    if shared_items:
+        result_parts.append(DIVIDERS["thin"])
+        result_parts.append("\n".join(shared_items))
+    
+    return _clip("\n\n".join(result_parts))
 
 
 # ==============================
@@ -1419,9 +1435,10 @@ async def cardoftheday_slash(interaction: discord.Interaction):
     tone_emoji = E["sun"] if orientation == "Upright" else E["moon"]
     intent_text = user_intentions.get(interaction.user.id)
 
-    desc = f"**{card['name']} ({orientation} {tone_emoji}) • {tone_label(tone)}**\n\n{meaning}"
+    # Premium clean header
+    desc = f"**{card['name']}** {tone_emoji} *{orientation}*\n{DIVIDERS['dots']}\n\n{meaning}"
     if intent_text:
-        desc += f"\n\n{E['light']} **Intention:** *{intent_text}*"
+        desc += f"\n\n✧ *Your intention: {intent_text}*"
 
     log_history_if_opted_in(
         interaction.user.id,
