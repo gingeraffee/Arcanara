@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import app_commands
 import re
 import random
@@ -17,6 +17,7 @@ from psycopg.types.json import Json
 from psycopg.rows import dict_row
 from typing import Dict, Any, List, Optional
 from card_images import make_image_attachment  # uses assets/cards/rws_stx/ etc.
+import topgg
 print("✅ Arcanara boot: VERSION 2025-12-21-TopGG-1")
 
 MYSTERY_STATE: Dict[int, Dict[str, Any]] = {}
@@ -27,6 +28,9 @@ MYSTERY_STATE: Dict[int, Dict[str, Any]] = {}
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN environment variable not found. Please set it in your host environment settings.")
+
+TOPGG_TOKEN = os.getenv("TOPGG_TOKEN")
+# Top.gg token is optional - bot will run without it but won't post stats
 
 # ==============================
 # DATABASE (Render Postgres)
@@ -1080,6 +1084,25 @@ async def send_ephemeral(
 # ==============================
 # EVENTS
 # ==============================
+# ==============================
+# TOP.GG STATS POSTING
+# ==============================
+@tasks.loop(minutes=30)
+async def post_topgg_stats():
+    """Post server and user count to top.gg every 30 minutes"""
+    if not TOPGG_TOKEN:
+        return
+    
+    try:
+        topgg_client = topgg.DBLClient(bot, TOPGG_TOKEN, autopost=False)
+        await topgg_client.post_guild_count(
+            guild_count=len(bot.guilds),
+            shard_count=bot.shard_count or 1
+        )
+        print(f"✅ Posted to top.gg: {len(bot.guilds)} servers")
+    except Exception as e:
+        print(f"⚠️ top.gg post failed: {type(e).__name__}: {e}")
+
 @bot.event
 async def on_ready():
     global _DB_READY
@@ -1097,6 +1120,23 @@ async def on_ready():
         print("✅ Slash commands synced.")
     except Exception as e:
         print(f"⚠️ Slash sync failed: {type(e).__name__}: {e}")
+
+    # Start top.gg stats posting
+    if TOPGG_TOKEN and not post_topgg_stats.is_running():
+        post_topgg_stats.start()
+        print("✅ top.gg stats task started.")
+        # Post immediately on startup
+        try:
+            topgg_client = topgg.DBLClient(bot, TOPGG_TOKEN, autopost=False)
+            await topgg_client.post_guild_count(
+                guild_count=len(bot.guilds),
+                shard_count=bot.shard_count or 1
+            )
+            print(f"✅ Initial post to top.gg: {len(bot.guilds)} servers")
+        except Exception as e:
+            print(f"⚠️ top.gg initial post failed: {type(e).__name__}: {e}")
+    elif not TOPGG_TOKEN:
+        print("⚠️ TOPGG_TOKEN not set - stats will not be posted.")
 
     print(f"{E['crystal']} Arcanara is awake and shimmering as {bot.user}")
 
