@@ -1,6 +1,12 @@
-discord.py==2.4.0
+# Discord bot dependencies
+discord.py>=2.3.0
 topggpy>=2.0.0
-python-dotenv
-discord.py>=2.3
+
+# Database
+psycopg[binary]>=3.1.0
+
+# Image processing (for card images)
 Pillow>=10.0.0
-psycopg[binary]==3.2.1
+
+# Utilities
+python-dotenv>=1.0.0
