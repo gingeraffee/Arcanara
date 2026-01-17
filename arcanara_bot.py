@@ -1708,7 +1708,7 @@ async def on_ready():
                         print(f"⚠️ top.gg initial post status {resp.status}")
         except Exception as e:
             print(f"⚠️ top.gg initial post failed: {type(e).__name__}: {e}")
-    elif not TOPGG_TOKEN:␊
+    elif not TOPGG_TOKEN:
         print("⚠️ ARCANARA_TOPGG_TOKEN (or TOPGG_TOKEN) not set - stats will not be posted.")
 
     print(f"🔮 Arcanara is awake and shimmering as {bot.user}", file=sys.stderr, flush=True)
@@ -2578,5 +2578,6 @@ async def settings_slash(
 # RUN BOT
 # ==============================
 bot.run(BOT_TOKEN)
+
 
 
