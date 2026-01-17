@@ -801,8 +801,7 @@ NUM_WORDS = {
     "seven": "7",
     "eight": "8",
     "nine": "9",
-    "ten": "10",
-}
+    "ten": "10",}
 NUM_WORDS_RE = re.compile(r"\b(" + "|".join(NUM_WORDS.keys()) + r")\b")
 
 
@@ -2579,4 +2578,5 @@ async def settings_slash(
 # RUN BOT
 # ==============================
 bot.run(BOT_TOKEN)
+
 
