@@ -1695,25 +1695,21 @@ async def on_ready():
             url = f"https://top.gg/api/bots/{topgg_bot_id}/stats"
             headers = {
                 "Authorization": TOPGG_TOKEN,
-                "Content-Type": "application/json",
+                "Content-Type": "application/json"
             }
             data = {
-                "server_count": server_count,
+                "server_count": server_count
             }
-
+            
             async with aiohttp.ClientSession() as session:
                 async with session.post(url, json=data, headers=headers) as resp:
                     if resp.status == 200:
-                        print(
-                            f"✅ Initial post to top.gg: {server_count} servers",
-                            file=sys.stderr,
-                            flush=True,
-                        )
+                        print(f"✅ Initial post to top.gg: {server_count} servers", file=sys.stderr, flush=True)
                     else:
                         print(f"⚠️ top.gg initial post status {resp.status}")
         except Exception as e:
             print(f"⚠️ top.gg initial post failed: {type(e).__name__}: {e}")
-    elif not TOPGG_TOKEN:
+    elif not TOPGG_TOKEN:␊
         print("⚠️ ARCANARA_TOPGG_TOKEN (or TOPGG_TOKEN) not set - stats will not be posted.")
 
     print(f"🔮 Arcanara is awake and shimmering as {bot.user}", file=sys.stderr, flush=True)
@@ -2583,3 +2579,4 @@ async def settings_slash(
 # RUN BOT
 # ==============================
 bot.run(BOT_TOKEN)
+
