@@ -35,7 +35,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN environment variable not found. Please set it in your host environment settings.")
 
-TOPGG_TOKEN = os.getenv("TOPGG_TOKEN")
+TOPGG_TOKEN = os.getenv("ARCANARA_TOPGG_TOKEN")
 # Top.gg token is optional - bot will run without it but won't post stats
 
 # ==============================
