@@ -35,14 +35,10 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN environment variable not found. Please set it in your host environment settings.")
 
-<<<<<<< HEAD
-TOPGG_TOKEN = os.getenv("ARCANARA_TOPGG_TOKEN")
-# Top.gg token is optional - bot will run without it but won't post stats
-=======
 TOPGG_TOKEN = os.getenv("TOPGG_TOKEN")
 # Top.gg token is optional - bot will run without it but won't post stats
 TOPGG_BOT_ID = os.getenv("TOPGG_BOT_ID")
->>>>>>> 396004452ad1fec145954bbd9dc8c2ad5ca27584
+>>>>>>> main
 
 # ==============================
 # DATABASE (Render Postgres)
@@ -1715,7 +1711,7 @@ async def on_ready():
         except Exception as e:
             print(f"⚠️ top.gg initial post failed: {type(e).__name__}: {e}")
     elif not TOPGG_TOKEN:
-        print("⚠️ TOPGG_TOKEN not set - stats will not be posted.")
+        print("⚠️ ARCANARA_TOPGG_TOKEN not set - stats will not be posted.")
 
     print(f"🔮 Arcanara is awake and shimmering as {bot.user}", file=sys.stderr, flush=True)
 
