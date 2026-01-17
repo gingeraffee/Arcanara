@@ -37,6 +37,7 @@ if not BOT_TOKEN:
 
 TOPGG_TOKEN = os.getenv("TOPGG_TOKEN")
 # Top.gg token is optional - bot will run without it but won't post stats
+TOPGG_BOT_ID = os.getenv("TOPGG_BOT_ID")
 
 # ==============================
 # DATABASE (Render Postgres)
@@ -1640,7 +1641,8 @@ async def post_topgg_stats():
     
     try:
         server_count = len(bot.guilds)
-        url = f"https://top.gg/api/bots/{bot.user.id}/stats"
+        topgg_bot_id = TOPGG_BOT_ID or str(bot.user.id)
+        url = f"https://top.gg/api/bots/{topgg_bot_id}/stats"
         headers = {
             "Authorization": TOPGG_TOKEN,
             "Content-Type": "application/json"
@@ -1680,10 +1682,17 @@ async def on_ready():
     if TOPGG_TOKEN and not post_topgg_stats.is_running():
         post_topgg_stats.start()
         print("✅ top.gg stats task started.", file=sys.stderr, flush=True)
+        if TOPGG_BOT_ID and str(bot.user.id) != TOPGG_BOT_ID:
+            print(
+                f"⚠️ TOPGG_BOT_ID ({TOPGG_BOT_ID}) does not match logged-in bot ID ({bot.user.id}).",
+                file=sys.stderr,
+                flush=True,
+            )
         # Post immediately on startup
         try:
             server_count = len(bot.guilds)
-            url = f"https://top.gg/api/bots/{bot.user.id}/stats"
+            topgg_bot_id = TOPGG_BOT_ID or str(bot.user.id)
+            url = f"https://top.gg/api/bots/{topgg_bot_id}/stats"
             headers = {
                 "Authorization": TOPGG_TOKEN,
                 "Content-Type": "application/json"
