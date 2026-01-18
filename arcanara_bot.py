@@ -19,12 +19,8 @@ from psycopg.rows import dict_row
 from typing import Dict, Any, List, Optional
 import asyncio  # For reading ceremonies
 from card_images import make_image_attachment  # uses assets/cards/rws_stx/ etc.
-import aiohttp  # For top.gg API calls
 
-# Top.gg will use direct HTTP API instead of a library
-TOPGG_AVAILABLE = True
-
-print("✅ Arcanara boot: VERSION 2025-01-15-TopGG-HTTP", file=sys.stderr, flush=True)
+print("✅ Arcanara boot: VERSION 2025-01-15", file=sys.stderr, flush=True)
 
 MYSTERY_STATE: Dict[int, Dict[str, Any]] = {}
 
@@ -35,9 +31,6 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN environment variable not found. Please set it in your host environment settings.")
 
-TOPGG_TOKEN = os.getenv("ARCANARA_TOPGG_TOKEN") or os.getenv("TOPGG_TOKEN")
-# Top.gg token is optional - bot will run without it but won't post stats
-TOPGG_BOT_ID = os.getenv("TOPGG_BOT_ID")
 
 # ==============================
 # DATABASE (Render Postgres)
@@ -1629,36 +1622,6 @@ async def send_ephemeral(
 # ==============================
 # EVENTS
 # ==============================
-# ==============================
-# TOP.GG STATS POSTING
-# ==============================
-@tasks.loop(minutes=30)
-async def post_topgg_stats():
-    """Post server count to top.gg every 30 minutes using HTTP API"""
-    if not TOPGG_TOKEN:
-        return
-    
-    try:
-        server_count = len(bot.guilds)
-        topgg_bot_id = TOPGG_BOT_ID or str(bot.user.id)
-        url = f"https://top.gg/api/bots/{topgg_bot_id}/stats"
-        headers = {
-            "Authorization": TOPGG_TOKEN,
-            "Content-Type": "application/json"
-        }
-        data = {
-            "server_count": server_count
-        }
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=data, headers=headers) as resp:
-                if resp.status == 200:
-                    print(f"✅ Posted to top.gg: {server_count} servers")
-                else:
-                    print(f"⚠️ top.gg returned status {resp.status}: {await resp.text()}")
-    except Exception as e:
-        print(f"⚠️ top.gg post failed: {type(e).__name__}: {e}")
-
 @bot.event
 async def on_ready():
     global _DB_READY
@@ -1676,40 +1639,6 @@ async def on_ready():
         print("✅ Slash commands synced.", file=sys.stderr, flush=True)
     except Exception as e:
         print(f"⚠️ Slash sync failed: {type(e).__name__}: {e}")
-
-    # Start top.gg stats posting
-    if TOPGG_TOKEN and not post_topgg_stats.is_running():
-        post_topgg_stats.start()
-        print("✅ top.gg stats task started.", file=sys.stderr, flush=True)
-        if TOPGG_BOT_ID and str(bot.user.id) != TOPGG_BOT_ID:
-            print(
-                f"⚠️ TOPGG_BOT_ID ({TOPGG_BOT_ID}) does not match logged-in bot ID ({bot.user.id}).",
-                file=sys.stderr,
-                flush=True,
-            )
-        # Post immediately on startup
-        try:
-            server_count = len(bot.guilds)
-            topgg_bot_id = TOPGG_BOT_ID or str(bot.user.id)
-            url = f"https://top.gg/api/bots/{topgg_bot_id}/stats"
-            headers = {
-                "Authorization": TOPGG_TOKEN,
-                "Content-Type": "application/json"
-            }
-            data = {
-                "server_count": server_count
-            }
-            
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=data, headers=headers) as resp:
-                    if resp.status == 200:
-                        print(f"✅ Initial post to top.gg: {server_count} servers", file=sys.stderr, flush=True)
-                    else:
-                        print(f"⚠️ top.gg initial post status {resp.status}")
-        except Exception as e:
-            print(f"⚠️ top.gg initial post failed: {type(e).__name__}: {e}")
-    elif not TOPGG_TOKEN:
-        print("⚠️ ARCANARA_TOPGG_TOKEN (or TOPGG_TOKEN) not set - stats will not be posted.")
 
     print(f"🔮 Arcanara is awake and shimmering as {bot.user}", file=sys.stderr, flush=True)
 
