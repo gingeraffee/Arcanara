@@ -9,6 +9,3 @@ Pillow>=10.0.0
 
 # Utilities
 python-dotenv>=1.0.0
-
-# For top.gg stats posting (using aiohttp which discord.py includes)
-aiohttp>=3.8.0
