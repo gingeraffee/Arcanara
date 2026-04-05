@@ -19,8 +19,9 @@ from psycopg.rows import dict_row
 from typing import Dict, Any, List, Optional
 import asyncio  # For reading ceremonies
 from card_images import make_image_attachment  # uses assets/cards/rws_stx/ etc.
+import aiohttp  # For top.gg API calls
 
-print("✅ Arcanara boot: VERSION 2025-01-15", file=sys.stderr, flush=True)
+print("✅ Arcanara boot: VERSION 2025-01-15-v2", file=sys.stderr, flush=True)
 
 MYSTERY_STATE: Dict[int, Dict[str, Any]] = {}
 
@@ -30,6 +31,23 @@ MYSTERY_STATE: Dict[int, Dict[str, Any]] = {}
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN environment variable not found. Please set it in your host environment settings.")
+
+# ==============================
+# TOP.GG CONFIG (Arcanara-specific)
+# ==============================
+# IMPORTANT: Use ARCANARA_TOPGG_TOKEN to avoid crosstalk with other bots.
+# ARCANARA_TOPGG_BOT_ID must match your Arcanara bot's Application ID on Top.gg.
+TOPGG_TOKEN = os.getenv("ARCANARA_TOPGG_TOKEN")
+TOPGG_BOT_ID = os.getenv("ARCANARA_TOPGG_BOT_ID")  # Required — no fallback to bot.user.id
+
+if TOPGG_TOKEN and not TOPGG_BOT_ID:
+    print(
+        "⚠️ ARCANARA_TOPGG_TOKEN is set but ARCANARA_TOPGG_BOT_ID is missing. "
+        "Top.gg stats will NOT be posted until both are set. "
+        "This prevents accidentally posting to the wrong bot's page.",
+        file=sys.stderr, flush=True,
+    )
+    TOPGG_TOKEN = None  # Disable until bot ID is also set
 
 
 # ==============================
@@ -138,6 +156,65 @@ def ensure_tables():
                 """
                 CREATE INDEX IF NOT EXISTS idx_tarot_history_user_time
                 ON tarot_reading_history (user_id, created_at DESC);
+                """
+            )
+
+            # ---- MIGRATION: add reversals column to user_settings
+            cur.execute("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'tarot_user_settings'
+                      AND column_name = 'reversals'
+                ) THEN
+                    ALTER TABLE tarot_user_settings
+                    ADD COLUMN reversals TEXT NOT NULL DEFAULT 'on';
+                END IF;
+            END $$;
+            """)
+
+            # Journal table
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tarot_journal (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    reading_id BIGINT,
+                    reflection TEXT NOT NULL,
+                    card_name TEXT,
+                    orientation TEXT,
+                    command TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_tarot_journal_user_time
+                ON tarot_journal (user_id, created_at DESC);
+                """
+            )
+
+            # Custom spreads table
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tarot_custom_spreads (
+                    id BIGSERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    name TEXT NOT NULL,
+                    positions TEXT[] NOT NULL,
+                    description TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE(user_id, name)
+                );
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_tarot_custom_spreads_user
+                ON tarot_custom_spreads (user_id);
                 """
             )
 
@@ -524,19 +601,22 @@ def render_meaning_both_sides(card: Dict[str, Any], tone: str) -> str:
 # ==============================
 # USER SETTINGS + HISTORY (DB-backed)
 # ==============================
+VALID_REVERSALS = ("on", "off", "always")
+
+
 def get_user_settings(user_id: int) -> dict:
     with db_connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT history_opt_in, images_enabled
+                SELECT history_opt_in, images_enabled, reversals
                 FROM tarot_user_settings
                 WHERE user_id=%s
                 """,
                 (user_id,),
             )
             row = cur.fetchone()
-    return row or {"history_opt_in": False, "images_enabled": True}
+    return row or {"history_opt_in": False, "images_enabled": True, "reversals": "on"}
 
 
 def set_user_settings(
@@ -544,29 +624,34 @@ def set_user_settings(
     *,
     history_opt_in: Optional[bool] = None,
     images_enabled: Optional[bool] = None,
+    reversals: Optional[str] = None,
 ) -> dict:
     current = get_user_settings(user_id)
     if history_opt_in is None:
         history_opt_in = current["history_opt_in"]
     if images_enabled is None:
         images_enabled = current["images_enabled"]
+    if reversals is None:
+        reversals = current.get("reversals", "on")
+    reversals = reversals if reversals in VALID_REVERSALS else "on"
 
     with db_connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO tarot_user_settings (user_id, history_opt_in, images_enabled)
-                VALUES (%s, %s, %s)
+                INSERT INTO tarot_user_settings (user_id, history_opt_in, images_enabled, reversals)
+                VALUES (%s, %s, %s, %s)
                 ON CONFLICT (user_id) DO UPDATE SET
                     history_opt_in = EXCLUDED.history_opt_in,
                     images_enabled = EXCLUDED.images_enabled,
+                    reversals = EXCLUDED.reversals,
                     updated_at = NOW()
                 """,
-                (user_id, history_opt_in, images_enabled),
+                (user_id, history_opt_in, images_enabled, reversals),
             )
         conn.commit()
 
-    return {"history_opt_in": history_opt_in, "images_enabled": images_enabled}
+    return {"history_opt_in": history_opt_in, "images_enabled": images_enabled, "reversals": reversals}
 
 def fetch_history(user_id: int, limit: int = 10) -> List[Dict[str, Any]]:
     with db_connect() as conn:
@@ -1093,19 +1178,28 @@ def analyze_recent_pattern(user_id: int) -> Optional[str]:
     return None
 
 
-def draw_card():
+def _resolve_orientation(reversals: str = "on") -> str:
+    """Return 'Upright' or 'Reversed' based on the user's reversals setting."""
+    if reversals == "off":
+        return "Upright"
+    if reversals == "always":
+        return "Reversed"
+    return random.choice(["Upright", "Reversed"])
+
+
+def draw_card(reversals: str = "on"):
     card = random.choice(tarot_cards)
-    orientation = random.choice(["Upright", "Reversed"])
+    orientation = _resolve_orientation(reversals)
     return card, orientation
 
 
-def draw_unique_cards(num_cards: int):
+def draw_unique_cards(num_cards: int, reversals: str = "on"):
     deck = tarot_cards.copy()
     random.shuffle(deck)
     drawn = []
     for _ in range(min(num_cards, len(deck))):
         card = deck.pop()
-        orientation = random.choice(["Upright", "Reversed"])
+        orientation = _resolve_orientation(reversals)
         drawn.append((card, orientation))
     return drawn
 
@@ -1143,6 +1237,11 @@ PREMIUM_COLORS = {
     "Settings": 0x4A5568,     # Slate (neutral but warm)
     "Error": 0x8B4545,        # Deep burgundy (not harsh red)
     "General": 0x6B5B7E,      # Soft twilight purple
+
+    # New feature types
+    "Journal": 0x7B6B4E,      # Worn leather (personal reflection)
+    "CustomSpread": 0x5A6B7E,  # Twilight blue (crafted layouts)
+    "Summary": 0x6B7B5A,      # Sage green (growth + patterns)
 }
 
 def suit_color(suit):
@@ -1275,6 +1374,23 @@ FOOTER_MESSAGES = {
         "Listen with your intuition, not just your mind.",
         "What the cards reveal, you already knew somewhere deep.",
     ],
+    "journal": [
+        "Your words anchor the wisdom. Come back to them.",
+        "Reflection deepens what the cards began.",
+        "The journal remembers what the moment forgets.",
+        "Writing is its own form of divination.",
+    ],
+    "summary": [
+        "Patterns emerge when you step back far enough to see.",
+        "The bigger picture speaks in themes, not individual cards.",
+        "Your journey has a shape — this is part of it.",
+        "What keeps returning has something to teach you.",
+    ],
+    "custom_spread": [
+        "Your spread, your design — the cards honor it.",
+        "A personal layout carries personal power.",
+        "Custom spreads speak in your language, not just the cards'.",
+    ],
 }
 
 def get_footer(reading_type: str = "general") -> str:
@@ -1406,7 +1522,10 @@ def build_onboarding_messages(guild: discord.Guild) -> List[str]:
         "• **/clarify** — one extra card for your current intention\n"
         "• **/meaning** — look up any card (upright + reversed)\n"
         "• **/history** — reflect on past readings\n"
-        "• **/mystery** → **/reveal** — dramatic pause included\n\n"
+        "• **/mystery** → **/reveal** — dramatic pause included\n"
+        "• **/journal write** — save reflections on readings\n"
+        "• **/spread create** — design your own spreads\n"
+        "• **/summary weekly** — see your reading patterns\n\n"
 
         "🔒 **Privacy**\n"
         "History is **opt-in** only. Use **/forgetme** to delete stored data.\n\n"
@@ -1622,6 +1741,34 @@ async def send_ephemeral(
 # ==============================
 # EVENTS
 # ==============================
+# ==============================
+# TOP.GG STATS POSTING
+# ==============================
+async def _post_topgg_server_count():
+    """Post current server count to top.gg. Used by the loop and on startup."""
+    if not TOPGG_TOKEN or not TOPGG_BOT_ID:
+        return
+    try:
+        server_count = len(bot.guilds)
+        url = f"https://top.gg/api/bots/{TOPGG_BOT_ID}/stats"
+        headers = {"Authorization": TOPGG_TOKEN, "Content-Type": "application/json"}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json={"server_count": server_count}, headers=headers) as resp:
+                if resp.status == 200:
+                    print(f"✅ Posted to top.gg (bot {TOPGG_BOT_ID}): {server_count} servers", file=sys.stderr, flush=True)
+                else:
+                    body = await resp.text()
+                    print(f"⚠️ top.gg returned {resp.status} for bot {TOPGG_BOT_ID}: {body}", file=sys.stderr, flush=True)
+    except Exception as e:
+        print(f"⚠️ top.gg post failed: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+
+
+@tasks.loop(minutes=30)
+async def post_topgg_stats():
+    """Post server count to top.gg every 30 minutes."""
+    await _post_topgg_server_count()
+
+
 @bot.event
 async def on_ready():
     global _DB_READY
@@ -1639,6 +1786,25 @@ async def on_ready():
         print("✅ Slash commands synced.", file=sys.stderr, flush=True)
     except Exception as e:
         print(f"⚠️ Slash sync failed: {type(e).__name__}: {e}")
+
+    # Start top.gg stats posting
+    if TOPGG_TOKEN and TOPGG_BOT_ID:
+        # Verify the bot ID matches what we're logged in as
+        if str(bot.user.id) != TOPGG_BOT_ID:
+            print(
+                f"⚠️ WARNING: ARCANARA_TOPGG_BOT_ID ({TOPGG_BOT_ID}) does NOT match "
+                f"logged-in bot ({bot.user.id} / {bot.user}). "
+                "Double-check your env vars! Stats posting is DISABLED to prevent crosstalk.",
+                file=sys.stderr, flush=True,
+            )
+        else:
+            if not post_topgg_stats.is_running():
+                post_topgg_stats.start()
+                print(f"✅ top.gg stats task started for bot {TOPGG_BOT_ID}.", file=sys.stderr, flush=True)
+            # Post immediately on startup
+            await _post_topgg_server_count()
+    else:
+        print("ℹ️ top.gg stats disabled (ARCANARA_TOPGG_TOKEN / ARCANARA_TOPGG_BOT_ID not set).", file=sys.stderr, flush=True)
 
     print(f"🔮 Arcanara is awake and shimmering as {bot.user}", file=sys.stderr, flush=True)
 
@@ -1775,20 +1941,21 @@ async def cardoftheday_slash(interaction: discord.Interaction):
         if not await safe_defer(interaction, ephemeral=True):
             return
 
+    settings = get_user_settings(interaction.user.id)
+    reversals_pref = settings.get("reversals", "on")
+
     if row:
         orientation = row["orientation"]
         card = find_card_by_name(row["card_name"])
         if card is None:
-            card, orientation = draw_card()
+            card, orientation = draw_card(reversals=reversals_pref)
             set_daily_card_row(interaction.user.id, day, card["name"], orientation)
     else:
-        card, orientation = draw_card()
+        card, orientation = draw_card(reversals=reversals_pref)
         set_daily_card_row(interaction.user.id, day, card["name"], orientation)
 
     tone = get_effective_tone(interaction.user.id)
     meaning = render_card_text(card, orientation, tone)
-
-    settings = get_user_settings(interaction.user.id)
 
     is_reversed = (orientation == "Reversed")
     file_obj, attach_url = None, None
@@ -1892,8 +2059,9 @@ async def read_slash(interaction: discord.Interaction, intention: str):
 
     user_intentions[interaction.user.id] = intention
     tone = get_effective_tone(interaction.user.id)
+    settings = get_user_settings(interaction.user.id)
 
-    cards = draw_unique_cards(3)
+    cards = draw_unique_cards(3, reversals=settings.get("reversals", "on"))
     positions = ["Situation", "Obstacle", "Guidance"]
 
     log_history_if_opted_in(
@@ -1952,9 +2120,9 @@ async def threecard_slash(interaction: discord.Interaction):
     await show_ceremony(interaction, "spread_layout", pause_seconds=2.0)
 
     positions = ["Past", "Present", "Future"]
-    cards = draw_unique_cards(3)
-
     tone = get_effective_tone(interaction.user.id)
+    settings = get_user_settings(interaction.user.id)
+    cards = draw_unique_cards(3, reversals=settings.get("reversals", "on"))
     intent_text = user_intentions.get(interaction.user.id)
 
     log_history_if_opted_in(
@@ -2003,8 +2171,9 @@ async def celtic_slash(interaction: discord.Interaction):
         "Present Situation", "Challenge", "Root Cause", "Past", "Conscious Goal",
         "Near Future", "Self", "External Influence", "Hopes & Fears", "Outcome",
     ]
-    cards = draw_unique_cards(10)
     tone = get_effective_tone(interaction.user.id)
+    settings = get_user_settings(interaction.user.id)
+    cards = draw_unique_cards(10, reversals=settings.get("reversals", "on"))
 
     log_history_if_opted_in(
         interaction.user.id,
@@ -2187,39 +2356,86 @@ async def meaning_slash(interaction: discord.Interaction, card: str):
         await send_ephemeral(interaction, embed=embed, mood="general")
 
 
-@bot.tree.command(name="clarify", description="Draw a clarifier card for your current intention.")
-async def clarify_slash(interaction: discord.Interaction):
-    # Clarify ceremony
-    await show_ceremony(interaction, "single_draw", pause_seconds=1.5)
+@bot.tree.command(name="clarify", description="Draw 1–3 clarifier cards for your current intention.")
+@app_commands.describe(count="Number of clarifier cards to draw (1–3, default 1)")
+async def clarify_slash(interaction: discord.Interaction, count: Optional[int] = 1):
+    count = max(1, min(int(count or 1), 3))
 
-    card, orientation = draw_card()
-    tone_emoji = E["sun"] if orientation == "Upright" else E["moon"]
+    # Clarify ceremony
+    ceremony = "single_draw" if count == 1 else "spread_layout"
+    await show_ceremony(interaction, ceremony, pause_seconds=1.5)
+
+    settings = get_user_settings(interaction.user.id)
+    reversals_pref = settings.get("reversals", "on")
+    tone = get_effective_tone(interaction.user.id)
     intent_text = user_intentions.get(interaction.user.id)
 
-    tone = get_effective_tone(interaction.user.id)
-    meaning = render_card_text(card, orientation, tone)
+    if count == 1:
+        # Original single-card behavior
+        card, orientation = draw_card(reversals=reversals_pref)
+        tone_emoji = E["sun"] if orientation == "Upright" else E["moon"]
+        meaning = render_card_text(card, orientation, tone)
 
-    log_history_if_opted_in(
-        interaction.user.id,
-        command="clarify",
-        tone=tone,
-        payload={
-            "intention": intent_text,
-            "card": {"name": card["name"], "orientation": orientation},
-        },
-    )
+        log_history_if_opted_in(
+            interaction.user.id,
+            command="clarify",
+            tone=tone,
+            payload={
+                "intention": intent_text,
+                "card": {"name": card["name"], "orientation": orientation},
+            },
+        )
 
-    desc = f"**{card['name']} ({orientation} {tone_emoji}) • {tone_label(tone)}**\n\n{meaning}"
-    if intent_text:
-        desc += f"\n\n{E['light']} **Clarifying Intention:** *{intent_text}*"
+        desc = f"**{card['name']} ({orientation} {tone_emoji}) • {tone_label(tone)}**\n\n{meaning}"
+        if intent_text:
+            desc += f"\n\n{E['light']} **Clarifying Intention:** *{intent_text}*"
 
-    embed = discord.Embed(
-        title=f"{E['light']} Clarifier Card {E['light']}",
-        description=desc,
-        color=suit_color(card["suit"]),
-    )
-    embed.set_footer(text=get_footer("clarify"))
-    await send_ephemeral(interaction, embed=embed, mood="general")
+        embed = discord.Embed(
+            title=f"{E['light']} Clarifier Card {E['light']}",
+            description=desc,
+            color=suit_color(card["suit"]),
+        )
+        embed.set_footer(text=get_footer("clarify"))
+        await send_ephemeral(interaction, embed=embed, mood="clarify")
+
+    else:
+        # Multi-card clarify
+        cards = draw_unique_cards(count, reversals=reversals_pref)
+
+        log_history_if_opted_in(
+            interaction.user.id,
+            command="clarify",
+            tone=tone,
+            payload={
+                "intention": intent_text,
+                "cards": [
+                    {"name": c["name"], "orientation": o, "position": f"Clarifier {i+1}"}
+                    for i, (c, o) in enumerate(cards)
+                ],
+            },
+        )
+
+        desc = f"**{count} clarifier cards** • {tone_label(tone)}"
+        if intent_text:
+            desc += f"\n{E['light']} *Intention: {intent_text}*"
+
+        embed = discord.Embed(
+            title=f"{E['light']} Clarifier Cards {E['light']}",
+            description=desc,
+            color=PREMIUM_COLORS["Clarify"],
+        )
+
+        for i, (card, orientation) in enumerate(cards, 1):
+            tone_emoji = E["sun"] if orientation == "Upright" else E["moon"]
+            meaning = render_card_text(card, orientation, tone)
+            embed.add_field(
+                name=f"Clarifier {i}: {card['name']} ({orientation} {tone_emoji})",
+                value=meaning if len(meaning) < 1000 else meaning[:997] + "...",
+                inline=False,
+            )
+
+        embed.set_footer(text=get_footer("clarify"))
+        await send_ephemeral(interaction, embed=embed, mood="clarify")
 
 @bot.tree.command(name="intent", description="Set (or view) your current intention.")
 @app_commands.describe(intention="Leave blank to view your current intention.")
@@ -2243,16 +2459,16 @@ async def mystery_slash(interaction: discord.Interaction):
     # Special mystery ceremony
     await show_ceremony(interaction, "mystery_draw", pause_seconds=2.0)
 
+    settings = get_user_settings(interaction.user.id)
     card = random.choice(tarot_cards)
-    is_reversed = random.random() < 0.5
+    rev_setting = settings.get("reversals", "on")
+    is_reversed = (rev_setting == "always") or (rev_setting == "on" and random.random() < 0.5)
 
     MYSTERY_STATE[interaction.user.id] = {
         "name": card["name"],
         "is_reversed": is_reversed,
         "ts": time.time(),
     }
-
-    settings = get_user_settings(interaction.user.id)
 
     embed_top = discord.Embed(
         title=f"{E['crystal']} {card['name']}" + (" — Reversed" if is_reversed else ""),
@@ -2398,6 +2614,11 @@ async def insight_slash(interaction: discord.Interaction):
         "• Feeling uncertain? **/clarify** will pull one more lantern from the dark.\n\n"
         "And if you’re in the mood for a little mischief:\n"
         "• **/mystery** (image only) … then **/reveal** when you’re ready.\n\n"
+        "**Go deeper:**\n"
+        "• **/journal write** — save reflections on your readings\n"
+        "• **/spread create** — design your own spread layout\n"
+        "• **/summary weekly** / **monthly** — see your reading patterns\n"
+        "• **/clarify** now supports **1–3 cards** (use `count:`)\n\n"
         "If you want to wipe the slate clean: **/shuffle** resets intention + tone."
     )
 
@@ -2444,8 +2665,10 @@ async def privacy_slash(interaction: discord.Interaction):
         description=(
             "**Stored data (optional / minimal):**\n"
             "• Your chosen `/tone`\n"
-            "• Your `/settings` (images on/off, history opt-in)\n"
-            "• Reading history **only if you opt in**\n\n"
+            "• Your `/settings` (images, history, reversals)\n"
+            "• Reading history **only if you opt in**\n"
+            "• Journal entries (from `/journal write`)\n"
+            "• Custom spreads (from `/spread create`)\n\n"
             "**Delete everything:** use `/forgetme`.\n"
             "Arcanara does not read server messages or DMs."
         ),
@@ -2463,6 +2686,8 @@ async def forgetme_slash(interaction: discord.Interaction):
 
     with db_connect() as conn:
         with conn.cursor() as cur:
+            cur.execute("DELETE FROM tarot_journal WHERE user_id=%s", (uid,))
+            cur.execute("DELETE FROM tarot_custom_spreads WHERE user_id=%s", (uid,))
             cur.execute("DELETE FROM tarot_user_prefs WHERE user_id=%s", (uid,))
             cur.execute("DELETE FROM tarot_user_settings WHERE user_id=%s", (uid,))
             cur.execute("DELETE FROM tarot_reading_history WHERE user_id=%s", (uid,))
@@ -2471,36 +2696,680 @@ async def forgetme_slash(interaction: discord.Interaction):
     user_intentions.pop(uid, None)
     MYSTERY_STATE.pop(uid, None)
 
-    await send_ephemeral(interaction, content="✅ Your thread has been cut clean. Stored data deleted.", mood="general")
+    await send_ephemeral(interaction, content="✅ Your thread has been cut clean. All stored data deleted.", mood="general")
 
-@bot.tree.command(name="settings", description="Control history + images for your readings.")
+@bot.tree.command(name="settings", description="Control history, images, and reversals for your readings.")
 @app_commands.choices(
     history=[app_commands.Choice(name="on", value="on"), app_commands.Choice(name="off", value="off")],
     images=[app_commands.Choice(name="on", value="on"), app_commands.Choice(name="off", value="off")],
+    reversals=[
+        app_commands.Choice(name="on (50/50 chance)", value="on"),
+        app_commands.Choice(name="off (always upright)", value="off"),
+        app_commands.Choice(name="always (shadow work)", value="always"),
+    ],
 )
+@app_commands.describe(reversals="Control reversed cards: on (default), off (always upright), always (shadow work)")
 async def settings_slash(
     interaction: discord.Interaction,
     history: Optional[app_commands.Choice[str]] = None,
     images: Optional[app_commands.Choice[str]] = None,
+    reversals: Optional[app_commands.Choice[str]] = None,
 ):
     if not await safe_defer(interaction, ephemeral=True):
         return
 
     h = None if history is None else (history.value == "on")
     i = None if images is None else (images.value == "on")
+    r = None if reversals is None else reversals.value
 
-    set_user_settings(interaction.user.id, history_opt_in=h, images_enabled=i)
+    set_user_settings(interaction.user.id, history_opt_in=h, images_enabled=i, reversals=r)
     s = get_user_settings(interaction.user.id)
 
+    rev_label = {"on": "on (50/50)", "off": "off (always upright)", "always": "always reversed"}
     await send_ephemeral(
         interaction,
         content=(
             "✅ Settings saved.\n"
             f"• History: **{'on' if s['history_opt_in'] else 'off'}**\n"
-            f"• Images: **{'on' if s['images_enabled'] else 'off'}**"
+            f"• Images: **{'on' if s['images_enabled'] else 'off'}**\n"
+            f"• Reversals: **{rev_label.get(s.get('reversals', 'on'), 'on (50/50)')}**"
         ),
         mood="general",
     )
+
+
+# ==============================
+# JOURNAL MODE
+# ==============================
+journal_group = app_commands.Group(name="journal", description="Reflect on your readings with a personal journal.")
+
+
+@journal_group.command(name="write", description="Save a reflection (optionally linked to a card).")
+@app_commands.describe(
+    reflection="Your personal reflection or insight",
+    card="Optional: link to a specific card (autocomplete)",
+)
+@app_commands.autocomplete(card=card_name_autocomplete)
+async def journal_write(interaction: discord.Interaction, reflection: str, card: Optional[str] = None):
+    if not await safe_defer(interaction, ephemeral=True):
+        return
+
+    if len(reflection) > 2000:
+        await send_ephemeral(interaction, content=f"{E['warn']} Reflection too long (max 2000 chars).", mood="general")
+        return
+
+    card_name = None
+    orientation = None
+    command = None
+    reading_id = None
+
+    if card:
+        # Link to a specific card by name
+        matched = find_card_by_name(card)
+        if matched:
+            card_name = matched["name"]
+        else:
+            # Try fuzzy match
+            norm = normalize_card_name(card)
+            matched = next((c for c in tarot_cards if norm in normalize_card_name(c.get("name", ""))), None)
+            if matched:
+                card_name = matched["name"]
+    else:
+        # Auto-link to most recent reading if history is on
+        try:
+            rows = fetch_history(interaction.user.id, limit=1)
+            if rows:
+                latest = rows[0]
+                reading_id = latest.get("id")
+                command = latest.get("command")
+                payload = latest.get("payload", {}) or {}
+                # Extract card name from payload
+                if "card" in payload:
+                    card_name = payload["card"] if isinstance(payload["card"], str) else payload["card"].get("name")
+                    orientation = payload.get("orientation") or (payload["card"].get("orientation") if isinstance(payload["card"], dict) else None)
+                elif "cards" in payload and payload["cards"]:
+                    first = payload["cards"][0]
+                    card_name = first.get("name")
+                    orientation = first.get("orientation")
+        except Exception:
+            pass  # Auto-link is best-effort
+
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO tarot_journal (user_id, reading_id, reflection, card_name, orientation, command)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (interaction.user.id, reading_id, reflection, card_name, orientation, command),
+            )
+        conn.commit()
+
+    parts = [f"{E['book']} **Journal entry saved.**"]
+    if card_name:
+        parts.append(f"Linked to: **{card_name}**" + (f" ({orientation})" if orientation else ""))
+    parts.append(f"\n*\"{reflection[:100]}{'...' if len(reflection) > 100 else ''}\"*")
+
+    embed = discord.Embed(
+        title="✧ Journal Entry ✧",
+        description="\n".join(parts),
+        color=PREMIUM_COLORS["Journal"],
+    )
+    embed.set_footer(text=get_footer("journal"))
+    await send_ephemeral(interaction, embed=embed, mood="general")
+
+
+@journal_group.command(name="read", description="View your recent journal entries.")
+@app_commands.describe(limit="Number of entries to show (1–20, default 5)")
+async def journal_read(interaction: discord.Interaction, limit: Optional[int] = 5):
+    if not await safe_defer(interaction, ephemeral=True):
+        return
+
+    limit = max(1, min(int(limit or 5), 20))
+
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT reflection, card_name, orientation, command, created_at
+                FROM tarot_journal
+                WHERE user_id = %s
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (interaction.user.id, limit),
+            )
+            rows = cur.fetchall() or []
+
+    if not rows:
+        await send_ephemeral(
+            interaction,
+            content="No journal entries yet. Use `/journal write` to save a reflection.",
+            mood="general",
+        )
+        return
+
+    lines = []
+    for r in rows:
+        stamp = ""
+        created_at = r.get("created_at")
+        if hasattr(created_at, "timestamp"):
+            stamp = f"<t:{int(created_at.timestamp())}:R> "
+
+        card_info = ""
+        if r.get("card_name"):
+            card_info = f"**{r['card_name']}**"
+            if r.get("orientation"):
+                card_info += f" ({r['orientation']})"
+            card_info += " — "
+
+        reflection = r.get("reflection", "")
+        preview = reflection[:120] + ("..." if len(reflection) > 120 else "")
+        lines.append(f"• {stamp}{card_info}*{preview}*")
+
+    text = _clip("\n\n".join(lines), max_len=3800)
+
+    embed = discord.Embed(
+        title=f"{E['book']} Your Journal",
+        description=text,
+        color=PREMIUM_COLORS["Journal"],
+    )
+    embed.set_footer(text=get_footer("journal"))
+    await send_ephemeral(interaction, embed=embed, mood="general")
+
+
+@journal_group.command(name="search", description="Search your journal entries by keyword.")
+@app_commands.describe(query="Keyword to search in your reflections")
+async def journal_search(interaction: discord.Interaction, query: str):
+    if not await safe_defer(interaction, ephemeral=True):
+        return
+
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT reflection, card_name, orientation, created_at
+                FROM tarot_journal
+                WHERE user_id = %s AND reflection ILIKE %s
+                ORDER BY created_at DESC
+                LIMIT 10
+                """,
+                (interaction.user.id, f"%{query}%"),
+            )
+            rows = cur.fetchall() or []
+
+    if not rows:
+        await send_ephemeral(
+            interaction,
+            content=f"No journal entries matching **\"{query}\"**.",
+            mood="general",
+        )
+        return
+
+    lines = []
+    for r in rows:
+        stamp = ""
+        created_at = r.get("created_at")
+        if hasattr(created_at, "timestamp"):
+            stamp = f"<t:{int(created_at.timestamp())}:R> "
+
+        card_info = f"**{r['card_name']}** — " if r.get("card_name") else ""
+        reflection = r.get("reflection", "")
+        preview = reflection[:120] + ("..." if len(reflection) > 120 else "")
+        lines.append(f"• {stamp}{card_info}*{preview}*")
+
+    text = _clip("\n\n".join(lines), max_len=3800)
+
+    embed = discord.Embed(
+        title=f"{E['book']} Journal Search: \"{query}\"",
+        description=f"Found **{len(rows)}** entries:\n\n{text}",
+        color=PREMIUM_COLORS["Journal"],
+    )
+    embed.set_footer(text=get_footer("journal"))
+    await send_ephemeral(interaction, embed=embed, mood="general")
+
+
+bot.tree.add_command(journal_group)
+
+
+# ==============================
+# CUSTOM SPREADS
+# ==============================
+spread_group = app_commands.Group(name="spread", description="Create and use your own custom tarot spreads.")
+
+MAX_SPREAD_POSITIONS = 10
+MAX_SPREADS_PER_USER = 10
+
+
+async def spread_name_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> List[app_commands.Choice[str]]:
+    try:
+        with db_connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT name FROM tarot_custom_spreads WHERE user_id = %s ORDER BY name",
+                    (interaction.user.id,),
+                )
+                rows = cur.fetchall() or []
+        names = [r["name"] for r in rows]
+        q = (current or "").lower()
+        filtered = [n for n in names if q in n.lower()] if q else names
+        return [app_commands.Choice(name=n, value=n) for n in filtered[:25]]
+    except Exception:
+        return []
+
+
+@spread_group.command(name="create", description="Create a custom spread layout.")
+@app_commands.describe(
+    name="Name for your spread (e.g. Mind Body Spirit)",
+    positions="Comma-separated position names (e.g. Mind, Body, Spirit)",
+    description="Optional description of this spread",
+)
+async def spread_create(interaction: discord.Interaction, name: str, positions: str, description: Optional[str] = None):
+    if not await safe_defer(interaction, ephemeral=True):
+        return
+
+    # Parse positions
+    pos_list = [p.strip() for p in positions.split(",") if p.strip()]
+
+    if not pos_list:
+        await send_ephemeral(interaction, content=f"{E['warn']} Please provide at least one position name.", mood="general")
+        return
+
+    if len(pos_list) > MAX_SPREAD_POSITIONS:
+        await send_ephemeral(
+            interaction,
+            content=f"{E['warn']} Maximum {MAX_SPREAD_POSITIONS} positions per spread.",
+            mood="general",
+        )
+        return
+
+    if len(name) > 50:
+        await send_ephemeral(interaction, content=f"{E['warn']} Spread name too long (max 50 chars).", mood="general")
+        return
+
+    # Check user spread count
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) as cnt FROM tarot_custom_spreads WHERE user_id = %s",
+                (interaction.user.id,),
+            )
+            row = cur.fetchone()
+            if row and row["cnt"] >= MAX_SPREADS_PER_USER:
+                await send_ephemeral(
+                    interaction,
+                    content=f"{E['warn']} You've reached the maximum of {MAX_SPREADS_PER_USER} spreads. Delete one with `/spread delete` first.",
+                    mood="general",
+                )
+                return
+
+            try:
+                cur.execute(
+                    """
+                    INSERT INTO tarot_custom_spreads (user_id, name, positions, description)
+                    VALUES (%s, %s, %s, %s)
+                    """,
+                    (interaction.user.id, name, pos_list, description),
+                )
+                conn.commit()
+            except Exception as e:
+                if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+                    await send_ephemeral(
+                        interaction,
+                        content=f"{E['warn']} You already have a spread named **{name}**.",
+                        mood="general",
+                    )
+                    return
+                raise
+
+    pos_display = " • ".join(pos_list)
+    desc_parts = [f"**{name}** — {len(pos_list)} positions\n{pos_display}"]
+    if description:
+        desc_parts.append(f"*{description}*")
+
+    embed = discord.Embed(
+        title=f"✧ Spread Created ✧",
+        description="\n\n".join(desc_parts),
+        color=PREMIUM_COLORS["CustomSpread"],
+    )
+    embed.set_footer(text=f"Use it with /spread use name:{name}")
+    await send_ephemeral(interaction, embed=embed, mood="general")
+
+
+@spread_group.command(name="use", description="Perform a reading with one of your custom spreads.")
+@app_commands.describe(
+    name="Name of your custom spread",
+    intention="Optional intention for this reading",
+)
+@app_commands.autocomplete(name=spread_name_autocomplete)
+async def spread_use(interaction: discord.Interaction, name: str, intention: Optional[str] = None):
+    await show_ceremony(interaction, "spread_layout", pause_seconds=2.0)
+
+    # Fetch spread
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT positions, description FROM tarot_custom_spreads WHERE user_id = %s AND name = %s",
+                (interaction.user.id, name),
+            )
+            row = cur.fetchone()
+
+    if not row:
+        await send_ephemeral(
+            interaction,
+            content=f"{E['warn']} No spread named **{name}** found. Use `/spread list` to see your spreads.",
+            mood="general",
+        )
+        return
+
+    pos_list = row["positions"]
+    settings = get_user_settings(interaction.user.id)
+    tone = get_effective_tone(interaction.user.id)
+    cards = draw_unique_cards(len(pos_list), reversals=settings.get("reversals", "on"))
+
+    if intention:
+        user_intentions[interaction.user.id] = intention
+    intent_text = user_intentions.get(interaction.user.id)
+
+    log_history_if_opted_in(
+        interaction.user.id,
+        command="custom_spread",
+        tone=tone,
+        payload={
+            "spread_name": name,
+            "intention": intent_text,
+            "cards": [
+                {"position": pos, "name": card["name"], "orientation": ori}
+                for pos, (card, ori) in zip(pos_list, cards)
+            ],
+        },
+    )
+
+    desc = f"**{name}** — {len(pos_list)} cards"
+    if row.get("description"):
+        desc += f"\n*{row['description']}*"
+    if intent_text:
+        desc += f"\n\n{E['light']} **Intention:** *{intent_text}*"
+    desc += f"\n**How I'll read this:** {tone_label(tone)}"
+
+    embed = discord.Embed(
+        title=f"✧ {name} ✧",
+        description=desc,
+        color=PREMIUM_COLORS["CustomSpread"],
+    )
+
+    for pos, (card, orientation) in zip(pos_list, cards):
+        tone_emoji = E["sun"] if orientation == "Upright" else E["moon"]
+        meaning = render_card_text(card, orientation, tone)
+        embed.add_field(
+            name=f"{pos}: {card['name']} ({orientation} {tone_emoji})",
+            value=meaning if len(meaning) < 1000 else meaning[:997] + "...",
+            inline=False,
+        )
+
+    embed.set_footer(text=get_footer("custom_spread"))
+    await send_ephemeral(interaction, embed=embed, mood="spread")
+
+
+@spread_group.command(name="list", description="Show all your custom spreads.")
+async def spread_list(interaction: discord.Interaction):
+    if not await safe_defer(interaction, ephemeral=True):
+        return
+
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT name, positions, description FROM tarot_custom_spreads WHERE user_id = %s ORDER BY name",
+                (interaction.user.id,),
+            )
+            rows = cur.fetchall() or []
+
+    if not rows:
+        await send_ephemeral(
+            interaction,
+            content="No custom spreads yet. Create one with `/spread create`.",
+            mood="general",
+        )
+        return
+
+    lines = []
+    for r in rows:
+        pos_display = " • ".join(r["positions"])
+        line = f"**{r['name']}** ({len(r['positions'])} cards)\n{pos_display}"
+        if r.get("description"):
+            line += f"\n*{r['description']}*"
+        lines.append(line)
+
+    embed = discord.Embed(
+        title=f"✧ Your Custom Spreads ✧",
+        description="\n\n".join(lines),
+        color=PREMIUM_COLORS["CustomSpread"],
+    )
+    embed.set_footer(text=f"{len(rows)}/{MAX_SPREADS_PER_USER} spreads used")
+    await send_ephemeral(interaction, embed=embed, mood="general")
+
+
+@spread_group.command(name="delete", description="Delete one of your custom spreads.")
+@app_commands.describe(name="Name of the spread to delete")
+@app_commands.autocomplete(name=spread_name_autocomplete)
+async def spread_delete(interaction: discord.Interaction, name: str):
+    if not await safe_defer(interaction, ephemeral=True):
+        return
+
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM tarot_custom_spreads WHERE user_id = %s AND name = %s",
+                (interaction.user.id, name),
+            )
+            deleted = cur.rowcount
+        conn.commit()
+
+    if deleted:
+        await send_ephemeral(interaction, content=f"✅ Spread **{name}** deleted.", mood="general")
+    else:
+        await send_ephemeral(
+            interaction,
+            content=f"{E['warn']} No spread named **{name}** found.",
+            mood="general",
+        )
+
+
+bot.tree.add_command(spread_group)
+
+
+# ==============================
+# WEEKLY/MONTHLY SUMMARY
+# ==============================
+summary_group = app_commands.Group(name="summary", description="Analyze your reading patterns over time.")
+
+
+def _build_summary_embed(user_id: int, days: int, label: str) -> Optional[discord.Embed]:
+    """Build a reading summary embed for the given time window. Returns None if no data."""
+    settings = get_user_settings(user_id)
+    if not settings.get("history_opt_in", False):
+        return None  # Caller handles the opt-in message
+
+    cutoff = datetime.now(DEFAULT_TZ) - timedelta(days=days)
+
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT command, tone, payload, created_at
+                FROM tarot_reading_history
+                WHERE user_id = %s AND created_at >= %s
+                ORDER BY created_at DESC
+                """,
+                (user_id, cutoff),
+            )
+            rows = cur.fetchall() or []
+
+    if not rows:
+        return "empty"
+
+    # --- Analyze ---
+    total_readings = len(rows)
+    tone_counts: Dict[str, int] = {}
+    card_counts: Dict[str, int] = {}
+    suit_counts = {"Cups": 0, "Wands": 0, "Swords": 0, "Pentacles": 0, "Major Arcana": 0}
+    reversed_count = 0
+    total_cards = 0
+    command_counts: Dict[str, int] = {}
+    tag_counts: Dict[str, int] = {}
+
+    for row in rows:
+        cmd = row.get("command", "unknown")
+        command_counts[cmd] = command_counts.get(cmd, 0) + 1
+        tone = row.get("tone", "poetic")
+        tone_counts[tone] = tone_counts.get(tone, 0) + 1
+
+        payload = row.get("payload", {}) or {}
+        cards_in_reading = []
+
+        # Extract cards from various payload formats
+        if "card" in payload:
+            c = payload["card"]
+            if isinstance(c, str):
+                cards_in_reading.append({"name": c, "orientation": payload.get("orientation", "Upright")})
+            elif isinstance(c, dict):
+                cards_in_reading.append(c)
+
+        if "cards" in payload:
+            for c in payload["cards"]:
+                if isinstance(c, dict) and "name" in c:
+                    cards_in_reading.append(c)
+
+        for card_info in cards_in_reading:
+            cname = card_info.get("name", "")
+            card_counts[cname] = card_counts.get(cname, 0) + 1
+            total_cards += 1
+
+            ori = card_info.get("orientation", "")
+            if ori.lower().startswith("r"):
+                reversed_count += 1
+
+            # Find suit
+            card_obj = next((c for c in tarot_cards if c.get("name") == cname), None)
+            if card_obj:
+                suit = card_obj.get("suit", "")
+                if "Major" in suit:
+                    suit_counts["Major Arcana"] += 1
+                elif suit in suit_counts:
+                    suit_counts[suit] += 1
+
+                # Count tags for theme analysis
+                for tag in (card_obj.get("tags") or []):
+                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
+
+    # --- Build embed ---
+    embed = discord.Embed(
+        title=f"✧ {label} Summary ✧",
+        description=f"**{total_readings}** readings • **{total_cards}** cards drawn",
+        color=PREMIUM_COLORS["Summary"],
+    )
+
+    # Reading types
+    cmd_lines = [f"`/{cmd}` × {cnt}" for cmd, cnt in sorted(command_counts.items(), key=lambda x: -x[1])]
+    embed.add_field(name="Reading Types", value=" • ".join(cmd_lines[:6]) or "—", inline=False)
+
+    # Suit distribution
+    if total_cards > 0:
+        suit_lines = []
+        suit_emojis = {"Wands": E["fire"], "Cups": E["water"], "Swords": E["sword"], "Pentacles": E["leaf"], "Major Arcana": E["arcana"]}
+        for suit in ["Major Arcana", "Cups", "Wands", "Swords", "Pentacles"]:
+            cnt = suit_counts[suit]
+            if cnt > 0:
+                pct = round(cnt / total_cards * 100)
+                bar = "█" * max(1, pct // 10) + "░" * (10 - max(1, pct // 10))
+                suit_lines.append(f"{suit_emojis.get(suit, '')} **{suit}**: {bar} {pct}%")
+        embed.add_field(name="Suit Distribution", value="\n".join(suit_lines) or "—", inline=False)
+
+        # Reversal rate
+        rev_pct = round(reversed_count / total_cards * 100)
+        embed.add_field(name="Reversal Rate", value=f"**{rev_pct}%** of cards drawn reversed ({reversed_count}/{total_cards})", inline=False)
+
+    # Top cards
+    top_cards = sorted(card_counts.items(), key=lambda x: -x[1])[:5]
+    if top_cards:
+        top_lines = [f"**{name}** × {cnt}" for name, cnt in top_cards]
+        embed.add_field(name="Most Drawn Cards", value="\n".join(top_lines), inline=True)
+
+    # Favorite tones
+    top_tones = sorted(tone_counts.items(), key=lambda x: -x[1])[:3]
+    if top_tones:
+        tone_lines = [f"**{t}** × {cnt}" for t, cnt in top_tones]
+        embed.add_field(name="Favorite Tones", value="\n".join(tone_lines), inline=True)
+
+    # Dominant themes (from tags)
+    top_tags = sorted(tag_counts.items(), key=lambda x: -x[1])[:5]
+    if top_tags:
+        tag_lines = [f"*{tag}*" for tag, _ in top_tags]
+        embed.add_field(name="Dominant Themes", value=" • ".join(tag_lines), inline=False)
+
+    # Streak
+    streak = get_daily_card_streak(user_id)
+    if streak >= 2:
+        embed.add_field(name="Daily Card Streak", value=f"**{streak} days** in a row", inline=True)
+
+    embed.set_footer(text=get_footer("summary"))
+    return embed
+
+
+@summary_group.command(name="weekly", description="Analyze your reading patterns from the last 7 days.")
+async def summary_weekly(interaction: discord.Interaction):
+    if not await safe_defer(interaction, ephemeral=True):
+        return
+
+    settings = get_user_settings(interaction.user.id)
+    if not settings.get("history_opt_in", False):
+        await send_ephemeral(
+            interaction,
+            content=(
+                f"{E['warn']} Summary requires reading history to be **on**.\n"
+                "Enable it with `/settings history:on`."
+            ),
+            mood="general",
+        )
+        return
+
+    result = _build_summary_embed(interaction.user.id, 7, "Weekly")
+    if result == "empty":
+        await send_ephemeral(interaction, content="No readings in the last 7 days.", mood="general")
+        return
+
+    await send_ephemeral(interaction, embed=result, mood="general")
+
+
+@summary_group.command(name="monthly", description="Analyze your reading patterns from the last 30 days.")
+async def summary_monthly(interaction: discord.Interaction):
+    if not await safe_defer(interaction, ephemeral=True):
+        return
+
+    settings = get_user_settings(interaction.user.id)
+    if not settings.get("history_opt_in", False):
+        await send_ephemeral(
+            interaction,
+            content=(
+                f"{E['warn']} Summary requires reading history to be **on**.\n"
+                "Enable it with `/settings history:on`."
+            ),
+            mood="general",
+        )
+        return
+
+    result = _build_summary_embed(interaction.user.id, 30, "Monthly")
+    if result == "empty":
+        await send_ephemeral(interaction, content="No readings in the last 30 days.", mood="general")
+        return
+
+    await send_ephemeral(interaction, embed=result, mood="general")
+
+
+bot.tree.add_command(summary_group)
 
 
 # ==============================

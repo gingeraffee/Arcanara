@@ -7,5 +7,8 @@ psycopg[binary]>=3.1.0
 # Image processing (for card images)
 Pillow>=10.0.0
 
+# HTTP client (top.gg API)
+aiohttp>=3.9.0
+
 # Utilities
 python-dotenv>=1.0.0
