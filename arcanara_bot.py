@@ -54,10 +54,12 @@ if TOPGG_TOKEN and not TOPGG_BOT_ID:
 # ==============================
 # Set ARCANARA_PREMIUM_SKU_ID to your Discord subscription SKU ID.
 # If not set, all features are unlocked (dev/testing mode).
-PREMIUM_SKU_ID = os.getenv("ARCANARA_PREMIUM_SKU_ID")
+PREMIUM_SKU_ID = (os.getenv("ARCANARA_PREMIUM_SKU_ID") or "").strip() or None
 FREE_TONES = {"poetic", "quick", "direct"}
 
-if not PREMIUM_SKU_ID:
+if PREMIUM_SKU_ID:
+    print(f"✅ Premium SKU configured: {PREMIUM_SKU_ID}", file=sys.stderr, flush=True)
+else:
     print("ℹ️ ARCANARA_PREMIUM_SKU_ID not set — all features unlocked (dev mode).", file=sys.stderr, flush=True)
 
 
