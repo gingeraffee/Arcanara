@@ -65,10 +65,15 @@ def is_premium(interaction: discord.Interaction) -> bool:
     """Check if user has active premium entitlement from interaction."""
     if not PREMIUM_SKU_ID:
         return True  # Dev mode: everything unlocked
-    return any(
-        str(ent.sku_id) == PREMIUM_SKU_ID
-        for ent in interaction.entitlements
-    )
+    entitlements = getattr(interaction, "entitlements", []) or []
+    for ent in entitlements:
+        if str(ent.sku_id) == PREMIUM_SKU_ID:
+            return True
+    # Debug log (remove once confirmed working)
+    if entitlements:
+        sku_ids = [str(e.sku_id) for e in entitlements]
+        print(f"🔍 Premium check: user={interaction.user.id} entitlement_skus={sku_ids} expected={PREMIUM_SKU_ID}", file=sys.stderr, flush=True)
+    return False
 
 
 # ==============================
