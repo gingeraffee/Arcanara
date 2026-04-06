@@ -1845,7 +1845,7 @@ async def send_daily_limit_message(interaction: discord.Interaction, command: st
     embed = discord.Embed(
         title="✧ Daily Limit Reached ✧",
         description=(
-            f"You've used your free **/{command}** for today.\n\n"
+            "You've used your free daily reading for today.\n\n"
             "Come back tomorrow, or unlock **unlimited readings** with Arcanara Oracle."
         ),
         color=PREMIUM_COLORS["General"],
@@ -2191,7 +2191,7 @@ async def cardoftheday_slash(interaction: discord.Interaction):
 @bot.tree.command(name="read", description="Three-card reading: Situation • Obstacle • Guidance.")
 @app_commands.describe(intention="Your question or intention (example: my career path)")
 async def read_slash(interaction: discord.Interaction, intention: str):
-    if not await check_free_daily_limit(interaction, "read"):
+    if not await check_free_daily_limit(interaction, "reading"):
         return
 
     # Show ceremony first
@@ -2238,7 +2238,7 @@ async def read_slash(interaction: discord.Interaction, intention: str):
 
     # Track daily usage for free users
     if not is_premium(interaction):
-        increment_daily_usage(interaction.user.id, _today_local_date(), "read")
+        increment_daily_usage(interaction.user.id, _today_local_date(), "reading")
 
     # Post-reading suggestion
     await asyncio.sleep(1.5)
@@ -2260,7 +2260,7 @@ async def read_slash(interaction: discord.Interaction, intention: str):
 
 @bot.tree.command(name="threecard", description="Past • Present • Future spread.")
 async def threecard_slash(interaction: discord.Interaction):
-    if not await check_free_daily_limit(interaction, "threecard"):
+    if not await check_free_daily_limit(interaction, "reading"):
         return
 
     # Show ceremony
@@ -2310,7 +2310,7 @@ async def threecard_slash(interaction: discord.Interaction):
 
     # Track daily usage for free users
     if not is_premium(interaction):
-        increment_daily_usage(interaction.user.id, _today_local_date(), "threecard")
+        increment_daily_usage(interaction.user.id, _today_local_date(), "reading")
 
 @bot.tree.command(name="celtic", description="Full 10-card Celtic Cross spread.")
 @app_commands.checks.cooldown(1, 120.0)
@@ -2631,7 +2631,7 @@ async def intent_slash(interaction: discord.Interaction, intention: Optional[str
 
 @bot.tree.command(name="mystery", description="Pull a mystery card (image only). Use /reveal to see the meaning.")
 async def mystery_slash(interaction: discord.Interaction):
-    if not await check_free_daily_limit(interaction, "mystery"):
+    if not await check_free_daily_limit(interaction, "reading"):
         return
 
     # Special mystery ceremony
@@ -2691,7 +2691,7 @@ async def mystery_slash(interaction: discord.Interaction):
 
     # Track daily usage for free users
     if not is_premium(interaction):
-        increment_daily_usage(interaction.user.id, _today_local_date(), "mystery")
+        increment_daily_usage(interaction.user.id, _today_local_date(), "reading")
 
 
 
