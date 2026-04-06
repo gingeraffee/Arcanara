@@ -2894,15 +2894,19 @@ async def settings_slash(
     i = None if images is None else (images.value == "on")
     r = None if reversals is None else reversals.value
 
-    set_user_settings(interaction.user.id, history_opt_in=h, images_enabled=i, reversals=r)
+    changed = any(x is not None for x in (history, images, reversals))
+    if changed:
+        set_user_settings(interaction.user.id, history_opt_in=h, images_enabled=i, reversals=r)
+
     s = get_user_settings(interaction.user.id)
 
     rev_label = {"on": "on (50/50)", "off": "off (always upright)", "always": "always reversed"}
-    tier = "**Premium ✧**" if is_premium(interaction) else "**Free**"
+    tier = "**Arcanara Oracle ✧**" if is_premium(interaction) else "**Free**"
+    header = "✅ Settings saved." if changed else f"{E['crystal']} Your Settings"
     await send_ephemeral(
         interaction,
         content=(
-            "✅ Settings saved.\n"
+            f"{header}\n"
             f"• Tier: {tier}\n"
             f"• History: **{'on' if s['history_opt_in'] else 'off'}**\n"
             f"• Images: **{'on' if s['images_enabled'] else 'off'}**\n"
