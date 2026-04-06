@@ -49,6 +49,27 @@ if TOPGG_TOKEN and not TOPGG_BOT_ID:
     )
     TOPGG_TOKEN = None  # Disable until bot ID is also set
 
+# ==============================
+# PREMIUM / DISCORD ENTITLEMENTS
+# ==============================
+# Set ARCANARA_PREMIUM_SKU_ID to your Discord subscription SKU ID.
+# If not set, all features are unlocked (dev/testing mode).
+PREMIUM_SKU_ID = os.getenv("ARCANARA_PREMIUM_SKU_ID")
+FREE_TONES = {"poetic", "quick", "direct"}
+
+if not PREMIUM_SKU_ID:
+    print("ℹ️ ARCANARA_PREMIUM_SKU_ID not set — all features unlocked (dev mode).", file=sys.stderr, flush=True)
+
+
+def is_premium(interaction: discord.Interaction) -> bool:
+    """Check if user has active premium entitlement from interaction."""
+    if not PREMIUM_SKU_ID:
+        return True  # Dev mode: everything unlocked
+    return any(
+        str(ent.sku_id) == PREMIUM_SKU_ID
+        for ent in interaction.entitlements
+    )
+
 
 # ==============================
 # DATABASE (Render Postgres)
@@ -215,6 +236,19 @@ def ensure_tables():
                 """
                 CREATE INDEX IF NOT EXISTS idx_tarot_custom_spreads_user
                 ON tarot_custom_spreads (user_id);
+                """
+            )
+
+            # Daily usage tracking (for free-tier limits)
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tarot_daily_usage (
+                    user_id BIGINT NOT NULL,
+                    day DATE NOT NULL,
+                    command TEXT NOT NULL,
+                    use_count INT NOT NULL DEFAULT 1,
+                    PRIMARY KEY (user_id, day, command)
+                );
                 """
             )
 
@@ -601,6 +635,35 @@ def render_meaning_both_sides(card: Dict[str, Any], tone: str) -> str:
 # ==============================
 # USER SETTINGS + HISTORY (DB-backed)
 # ==============================
+# ==============================
+# DAILY USAGE TRACKING (free-tier limits)
+# ==============================
+def get_daily_usage(user_id: int, day, command: str) -> int:
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT use_count FROM tarot_daily_usage WHERE user_id=%s AND day=%s AND command=%s",
+                (user_id, day, command),
+            )
+            row = cur.fetchone()
+    return row["use_count"] if row else 0
+
+
+def increment_daily_usage(user_id: int, day, command: str) -> None:
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO tarot_daily_usage (user_id, day, command, use_count)
+                VALUES (%s, %s, %s, 1)
+                ON CONFLICT (user_id, day, command) DO UPDATE SET
+                    use_count = tarot_daily_usage.use_count + 1
+                """,
+                (user_id, day, command),
+            )
+        conn.commit()
+
+
 VALID_REVERSALS = ("on", "off", "always")
 
 
@@ -1742,6 +1805,57 @@ async def send_ephemeral(
 # EVENTS
 # ==============================
 # ==============================
+# PREMIUM UPSELL MESSAGES
+# ==============================
+async def send_premium_upsell(interaction: discord.Interaction, feature_name: str):
+    """Send a consistent upgrade prompt for premium-only features."""
+    embed = discord.Embed(
+        title="✧ Premium Feature ✧",
+        description=(
+            f"**{feature_name}** is available with Arcanara Premium.\n\n"
+            "Unlock unlimited readings, all 8 tones, journal mode, "
+            "custom spreads, summaries, and more."
+        ),
+        color=PREMIUM_COLORS["General"],
+    )
+    embed.set_footer(text="Use the Arcanara app page to subscribe.")
+    await send_ephemeral(interaction, embed=embed, mood="general")
+
+
+async def send_daily_limit_message(interaction: discord.Interaction, command: str):
+    """Send a consistent message when a free user hits their daily limit."""
+    embed = discord.Embed(
+        title="✧ Daily Limit Reached ✧",
+        description=(
+            f"You've used your free **/{command}** for today.\n\n"
+            "Come back tomorrow, or unlock **unlimited readings** with Arcanara Premium."
+        ),
+        color=PREMIUM_COLORS["General"],
+    )
+    embed.set_footer(text="Use the Arcanara app page to subscribe.")
+    await send_ephemeral(interaction, embed=embed, mood="general")
+
+
+async def check_free_daily_limit(interaction: discord.Interaction, command: str, limit: int = 1) -> bool:
+    """
+    Check if a free user is within their daily limit.
+    Returns True if the user can proceed (premium or under limit).
+    Returns False and sends a limit message if over limit.
+    Does NOT increment — caller must call increment_daily_usage() after a successful action.
+    """
+    if is_premium(interaction):
+        return True
+    day = _today_local_date()
+    used = get_daily_usage(interaction.user.id, day, command)
+    if used >= limit:
+        if not interaction.response.is_done():
+            await safe_defer(interaction, ephemeral=True)
+        await send_daily_limit_message(interaction, command)
+        return False
+    return True
+
+
+# ==============================
 # TOP.GG STATS POSTING
 # ==============================
 async def _post_topgg_server_count():
@@ -1863,7 +1977,12 @@ async def history_slash(interaction: discord.Interaction, limit: Optional[int] =
     if not await safe_defer(interaction, ephemeral=True):
         return
 
-    limit = 10 if limit is None else max(1, min(int(limit), 20))
+    # Free users: max 3 entries
+    free_max = 3
+    if is_premium(interaction):
+        limit = 10 if limit is None else max(1, min(int(limit), 20))
+    else:
+        limit = min(int(limit or free_max), free_max)
 
     settings = get_user_settings(interaction.user.id)
     if not settings.get("history_opt_in", False):
@@ -2054,6 +2173,9 @@ async def cardoftheday_slash(interaction: discord.Interaction):
 @bot.tree.command(name="read", description="Three-card reading: Situation • Obstacle • Guidance.")
 @app_commands.describe(intention="Your question or intention (example: my career path)")
 async def read_slash(interaction: discord.Interaction, intention: str):
+    if not await check_free_daily_limit(interaction, "read"):
+        return
+
     # Show ceremony first
     await show_ceremony(interaction, "spread_layout", pause_seconds=2.0)
 
@@ -2095,10 +2217,14 @@ async def read_slash(interaction: discord.Interaction, intention: str):
 
     embed.set_footer(text=get_footer("spread"))
     await send_ephemeral(interaction, embed=embed, mood="question")
-    
+
+    # Track daily usage for free users
+    if not is_premium(interaction):
+        increment_daily_usage(interaction.user.id, _today_local_date(), "read")
+
     # Post-reading suggestion
     await asyncio.sleep(1.5)
-    
+
     # Check if any heavy cards appeared
     card_names = [card["name"] for card, _ in cards]
     suggestions = [get_post_reading_suggestion(name, "read") for name in card_names]
@@ -2116,6 +2242,9 @@ async def read_slash(interaction: discord.Interaction, intention: str):
 
 @bot.tree.command(name="threecard", description="Past • Present • Future spread.")
 async def threecard_slash(interaction: discord.Interaction):
+    if not await check_free_daily_limit(interaction, "threecard"):
+        return
+
     # Show ceremony
     await show_ceremony(interaction, "spread_layout", pause_seconds=2.0)
 
@@ -2161,9 +2290,18 @@ async def threecard_slash(interaction: discord.Interaction):
 
     await send_ephemeral(interaction, embed=embed, mood="spread")
 
+    # Track daily usage for free users
+    if not is_premium(interaction):
+        increment_daily_usage(interaction.user.id, _today_local_date(), "threecard")
+
 @bot.tree.command(name="celtic", description="Full 10-card Celtic Cross spread.")
 @app_commands.checks.cooldown(1, 120.0)
 async def celtic_slash(interaction: discord.Interaction):
+    if not is_premium(interaction):
+        if not await safe_defer(interaction, ephemeral=True):
+            return
+        await send_premium_upsell(interaction, "Celtic Cross")
+        return
     # Longer ceremony for the big spread
     await show_ceremony(interaction, "celtic_layout", pause_seconds=2.5)
 
@@ -2244,7 +2382,22 @@ async def celtic_slash(interaction: discord.Interaction):
 async def tone_slash(interaction: discord.Interaction, tone: app_commands.Choice[str]):
     if not await safe_defer(interaction, ephemeral=True):
         return
-        
+
+    # Free users: only poetic, quick, direct
+    if not is_premium(interaction) and tone.value not in FREE_TONES:
+        premium_tones = [t for t in TONE_SPECS if t not in FREE_TONES]
+        await send_ephemeral(
+            interaction,
+            content=(
+                f"{E['warn']} The **{tone.value}** tone is a premium feature.\n\n"
+                f"**Free tones:** poetic, quick, direct\n"
+                f"**Premium tones:** {', '.join(premium_tones)}\n\n"
+                "Upgrade to Arcanara Premium to unlock all tones."
+            ),
+            mood="general",
+        )
+        return
+
     chosen = set_user_tone(interaction.user.id, tone.value)
     await send_ephemeral(
         interaction,
@@ -2361,6 +2514,10 @@ async def meaning_slash(interaction: discord.Interaction, card: str):
 async def clarify_slash(interaction: discord.Interaction, count: Optional[int] = 1):
     count = max(1, min(int(count or 1), 3))
 
+    # Free users: clamp to 1 card
+    if not is_premium(interaction) and count > 1:
+        count = 1
+
     # Clarify ceremony
     ceremony = "single_draw" if count == 1 else "spread_layout"
     await show_ceremony(interaction, ceremony, pause_seconds=1.5)
@@ -2456,6 +2613,9 @@ async def intent_slash(interaction: discord.Interaction, intention: Optional[str
 
 @bot.tree.command(name="mystery", description="Pull a mystery card (image only). Use /reveal to see the meaning.")
 async def mystery_slash(interaction: discord.Interaction):
+    if not await check_free_daily_limit(interaction, "mystery"):
+        return
+
     # Special mystery ceremony
     await show_ceremony(interaction, "mystery_draw", pause_seconds=2.0)
 
@@ -2510,6 +2670,10 @@ async def mystery_slash(interaction: discord.Interaction):
         )
 
     await send_ephemeral(interaction, embed=embed_top, mood="general", file_obj=file_obj)
+
+    # Track daily usage for free users
+    if not is_premium(interaction):
+        increment_daily_usage(interaction.user.id, _today_local_date(), "mystery")
 
 
 
@@ -2614,11 +2778,13 @@ async def insight_slash(interaction: discord.Interaction):
         "• Feeling uncertain? **/clarify** will pull one more lantern from the dark.\n\n"
         "And if you’re in the mood for a little mischief:\n"
         "• **/mystery** (image only) … then **/reveal** when you’re ready.\n\n"
-        "**Go deeper:**\n"
+        "**Go deeper (Premium):**\n"
+        "• **/celtic** — full 10-card Celtic Cross\n"
         "• **/journal write** — save reflections on your readings\n"
         "• **/spread create** — design your own spread layout\n"
         "• **/summary weekly** / **monthly** — see your reading patterns\n"
-        "• **/clarify** now supports **1–3 cards** (use `count:`)\n\n"
+        "• **/clarify** with up to **3 cards** • all **8 tones** unlocked\n"
+        "• Unlimited **/read**, **/threecard**, **/mystery** per day\n\n"
         "If you want to wipe the slate clean: **/shuffle** resets intention + tone."
     )
 
@@ -2686,6 +2852,7 @@ async def forgetme_slash(interaction: discord.Interaction):
 
     with db_connect() as conn:
         with conn.cursor() as cur:
+            cur.execute("DELETE FROM tarot_daily_usage WHERE user_id=%s", (uid,))
             cur.execute("DELETE FROM tarot_journal WHERE user_id=%s", (uid,))
             cur.execute("DELETE FROM tarot_custom_spreads WHERE user_id=%s", (uid,))
             cur.execute("DELETE FROM tarot_user_prefs WHERE user_id=%s", (uid,))
@@ -2726,10 +2893,12 @@ async def settings_slash(
     s = get_user_settings(interaction.user.id)
 
     rev_label = {"on": "on (50/50)", "off": "off (always upright)", "always": "always reversed"}
+    tier = "**Premium ✧**" if is_premium(interaction) else "**Free**"
     await send_ephemeral(
         interaction,
         content=(
             "✅ Settings saved.\n"
+            f"• Tier: {tier}\n"
             f"• History: **{'on' if s['history_opt_in'] else 'off'}**\n"
             f"• Images: **{'on' if s['images_enabled'] else 'off'}**\n"
             f"• Reversals: **{rev_label.get(s.get('reversals', 'on'), 'on (50/50)')}**"
@@ -2752,6 +2921,10 @@ journal_group = app_commands.Group(name="journal", description="Reflect on your 
 @app_commands.autocomplete(card=card_name_autocomplete)
 async def journal_write(interaction: discord.Interaction, reflection: str, card: Optional[str] = None):
     if not await safe_defer(interaction, ephemeral=True):
+        return
+
+    if not is_premium(interaction):
+        await send_premium_upsell(interaction, "Journal Mode")
         return
 
     if len(reflection) > 2000:
@@ -2825,6 +2998,10 @@ async def journal_read(interaction: discord.Interaction, limit: Optional[int] = 
     if not await safe_defer(interaction, ephemeral=True):
         return
 
+    if not is_premium(interaction):
+        await send_premium_upsell(interaction, "Journal Mode")
+        return
+
     limit = max(1, min(int(limit or 5), 20))
 
     with db_connect() as conn:
@@ -2882,6 +3059,10 @@ async def journal_read(interaction: discord.Interaction, limit: Optional[int] = 
 @app_commands.describe(query="Keyword to search in your reflections")
 async def journal_search(interaction: discord.Interaction, query: str):
     if not await safe_defer(interaction, ephemeral=True):
+        return
+
+    if not is_premium(interaction):
+        await send_premium_upsell(interaction, "Journal Mode")
         return
 
     with db_connect() as conn:
@@ -2971,6 +3152,10 @@ async def spread_create(interaction: discord.Interaction, name: str, positions: 
     if not await safe_defer(interaction, ephemeral=True):
         return
 
+    if not is_premium(interaction):
+        await send_premium_upsell(interaction, "Custom Spreads")
+        return
+
     # Parse positions
     pos_list = [p.strip() for p in positions.split(",") if p.strip()]
 
@@ -3046,6 +3231,12 @@ async def spread_create(interaction: discord.Interaction, name: str, positions: 
 )
 @app_commands.autocomplete(name=spread_name_autocomplete)
 async def spread_use(interaction: discord.Interaction, name: str, intention: Optional[str] = None):
+    if not is_premium(interaction):
+        if not await safe_defer(interaction, ephemeral=True):
+            return
+        await send_premium_upsell(interaction, "Custom Spreads")
+        return
+
     await show_ceremony(interaction, "spread_layout", pause_seconds=2.0)
 
     # Fetch spread
@@ -3119,6 +3310,10 @@ async def spread_list(interaction: discord.Interaction):
     if not await safe_defer(interaction, ephemeral=True):
         return
 
+    if not is_premium(interaction):
+        await send_premium_upsell(interaction, "Custom Spreads")
+        return
+
     with db_connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -3157,6 +3352,10 @@ async def spread_list(interaction: discord.Interaction):
 @app_commands.autocomplete(name=spread_name_autocomplete)
 async def spread_delete(interaction: discord.Interaction, name: str):
     if not await safe_defer(interaction, ephemeral=True):
+        return
+
+    if not is_premium(interaction):
+        await send_premium_upsell(interaction, "Custom Spreads")
         return
 
     with db_connect() as conn:
@@ -3324,6 +3523,10 @@ async def summary_weekly(interaction: discord.Interaction):
     if not await safe_defer(interaction, ephemeral=True):
         return
 
+    if not is_premium(interaction):
+        await send_premium_upsell(interaction, "Reading Summaries")
+        return
+
     settings = get_user_settings(interaction.user.id)
     if not settings.get("history_opt_in", False):
         await send_ephemeral(
@@ -3347,6 +3550,10 @@ async def summary_weekly(interaction: discord.Interaction):
 @summary_group.command(name="monthly", description="Analyze your reading patterns from the last 30 days.")
 async def summary_monthly(interaction: discord.Interaction):
     if not await safe_defer(interaction, ephemeral=True):
+        return
+
+    if not is_premium(interaction):
+        await send_premium_upsell(interaction, "Reading Summaries")
         return
 
     settings = get_user_settings(interaction.user.id)
