@@ -68,13 +68,24 @@ def is_premium(interaction: discord.Interaction) -> bool:
     if not PREMIUM_SKU_ID:
         return True  # Dev mode: everything unlocked
     entitlements = getattr(interaction, "entitlements", []) or []
+    # Debug: log ALL entitlement details for every check
+    if entitlements:
+        for ent in entitlements:
+            ent_type = getattr(ent, "type", "unknown")
+            ent_deleted = getattr(ent, "deleted", None)
+            ent_user_id = getattr(ent, "user_id", None)
+            ent_guild_id = getattr(ent, "guild_id", None)
+            print(
+                f"🔍 Entitlement: user={interaction.user.id} sku={ent.sku_id} "
+                f"type={ent_type} deleted={ent_deleted} ent_user={ent_user_id} "
+                f"ent_guild={ent_guild_id}",
+                file=sys.stderr, flush=True,
+            )
+    else:
+        print(f"🔍 No entitlements for user={interaction.user.id}", file=sys.stderr, flush=True)
     for ent in entitlements:
         if str(ent.sku_id) == PREMIUM_SKU_ID:
             return True
-    # Debug log (remove once confirmed working)
-    if entitlements:
-        sku_ids = [str(e.sku_id) for e in entitlements]
-        print(f"🔍 Premium check: user={interaction.user.id} entitlement_skus={sku_ids} expected={PREMIUM_SKU_ID}", file=sys.stderr, flush=True)
     return False
 
 
