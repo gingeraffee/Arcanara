@@ -1812,7 +1812,7 @@ async def send_premium_upsell(interaction: discord.Interaction, feature_name: st
     embed = discord.Embed(
         title="✧ Premium Feature ✧",
         description=(
-            f"**{feature_name}** is available with Arcanara Premium.\n\n"
+            f"**{feature_name}** is available with Arcanara Oracle.\n\n"
             "Unlock unlimited readings, all 8 tones, journal mode, "
             "custom spreads, summaries, and more."
         ),
@@ -1828,7 +1828,7 @@ async def send_daily_limit_message(interaction: discord.Interaction, command: st
         title="✧ Daily Limit Reached ✧",
         description=(
             f"You've used your free **/{command}** for today.\n\n"
-            "Come back tomorrow, or unlock **unlimited readings** with Arcanara Premium."
+            "Come back tomorrow, or unlock **unlimited readings** with Arcanara Oracle."
         ),
         color=PREMIUM_COLORS["General"],
     )
@@ -2392,7 +2392,7 @@ async def tone_slash(interaction: discord.Interaction, tone: app_commands.Choice
                 f"{E['warn']} The **{tone.value}** tone is a premium feature.\n\n"
                 f"**Free tones:** poetic, quick, direct\n"
                 f"**Premium tones:** {', '.join(premium_tones)}\n\n"
-                "Upgrade to Arcanara Premium to unlock all tones."
+                "Upgrade to Arcanara Oracle to unlock all tones."
             ),
             mood="general",
         )
